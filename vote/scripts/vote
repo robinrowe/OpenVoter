@@ -1,0 +1,1019 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DataCheck;
+use DateFormats;
+use Email;
+use CGI;
+use CGI::Carp qw(fatalsToBrowser);
+#use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie($cookiename);
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[12]/) #only delegates - roleid 1, and alternates - roleid 2, can vote
+	{
+	my $id = $q->param('pid');
+	if ($q->param('propvote'))
+		{propvote();}
+	elsif ($q->param("confirm$id"))
+		{confirm();}
+	elsif ($q->param("irvvote$id"))
+		{irvvote();}
+	elsif ($q->param('cancel'))
+		{
+		print $q->redirect (-location => "index");
+		exit();
+		}
+	else
+		{voteform();}
+	}
+
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+sub voteform {
+
+my $name = $session->param('name');
+
+my $dbh = DBConnect::connectr();
+
+my $msg = $q->param('msg');
+my $msg1 = $q->param('msg1');
+my $msg2 = $q->param('msg2');
+my $id = $q->param('id');
+
+$message = "You may look up your vote on ranked choice vote $id by using this ballot key: (click on the key to see your ballot) <a href=\"viewballot?pid=$id&key=$msg\"><b>$msg</b></a>. Your key is not associated with your records, so please write it down or paste it into a file. Once you cast another vote or leave this page, this ballot key will not appear again. The voting page admins don't know what your key is, so they can't help you if you lose it.<br><br>\n" if $msg;
+
+$message = "<b>Thank you for voting in ranked choice vote $id. Your votes are displayed below.</b><br><br>\n" if $msg1;
+
+$message = "<b>Thank you for voting on Proposal $id. Your vote is displayed below.</b><br><br>\n" if $msg2;
+
+my $cntp = qq {select count(pid) from proposals where phaseid = 3};
+my $proposals = $dbh->selectrow_array($cntp);
+
+my $cnti = qq {select count(pid) from irv where phaseid = 3};
+my $irvs = $dbh->selectrow_array($cnti);
+
+if (! $message)
+	{
+	if ($proposals == 1)
+		{$message = "There is 1 current proposal to vote on. ";}
+	elsif ($proposals > 1)
+		{$message = "There are $proposals current proposals to vote on. ";}
+	else
+		{$message = "There are no current proposals to vote on. ";}
+	if ($irvs == 1)
+		{$message .= "There is 1 current ranked choice vote.";}
+	elsif ($irvs > 1)
+		{$message .= "There are $irvs current ranked choice votes.";}
+	else
+		{$message .= "There are no current ranked choice votes to vote on.";}
+	$message = "<h4>$message</h4>\n";
+	}
+
+my ($distid, $did, $roleid, $rid, $dist, $role, %distsroles, @dists, %dist, %role, $welcome);
+
+my $sth1 = $dbh->prepare(qq {select gr.distid, gr.roleid, d.district, r.role from greens_roles gr, districts d, roles r where gr.gid = ? and gr.distid = d.distid and gr.roleid = r.roleid and gr.roleid in (1, 2) and gr.actstatus = 1});
+	#only current delegates and alternates - roleids 1 and 2 - can vote
+$sth1->execute($guid);
+$sth1->bind_columns(\($did, $rid, $dist, $role));
+while (my $ref1 = $sth1->fetch) {
+	$distsroles{$did} = $rid;
+	push (@dists, $did);
+	$role{$rid} = $role;
+	$dist{$did} = $dist;
+	}
+$sth1->finish;
+
+if (scalar(keys(%distsroles)) == 1) 
+	{
+	$distid = $did;
+	$welcome = "<h4>Welcome, $name - $dist $role!</h4>";
+	}
+else
+	{
+	$welcome = "<h4>Welcome, $name!</h4>";
+	}
+
+HeadFoot::head($guid, $page);
+
+my $group = Conf::group();
+my $acronym = Conf::acronym();
+
+print $q->h3("$acronym $group Voting");
+print "$welcome\n";
+print "$message\n";
+
+my $voteendtime = Conf::voteendtime();
+
+if ($proposals) {
+	my ($pid, $title, $voteend, $vote);
+	while (($did, $rid) = each(%distsroles))
+		{
+		my $sth2 = $dbh->prepare(qq {select p.pid, p.title, p.voteend, v.vote from proposals p LEFT JOIN votes v on p.pid = v.pid and v.gid = ? and v.distid = ? where p.phaseid = 3 order by v.vote, p.pid}); #phase 3 = voting
+		$sth2->execute($guid, $did);
+		$sth2->bind_columns(\($pid, $title, $voteend, $vote));
+		
+		while (my $ref2 = $sth2->fetch) {
+			$voteend = DateFormats::display($voteend);
+			print "<b>ID $pid <a href='propdetail?pid=$pid'>$title</a></b><br>\n";
+			print "Voting Ends on <b>$voteend</b> at $voteendtime - <a href='propresult?pid=$pid'><b>Current Results</b></a><br><br>\n";
+			my $printdistrole = "";
+		
+			print $q->start_form();
+			$printdistrole = "$dist{$did} $role{$rid}";
+			if ($vote) 
+				{
+				#I have to use print statements instead of CGI radio groups due to CGI's stickiness changing the displayed values to incorrect ones.
+				if ($distid)
+					{
+					print "<b>Change Your Vote:</b><br>\n";
+					print "Your Previous Vote is Shown Below:<ul>";
+					}
+				else
+					{
+					print "<b>Change Your Vote: $printdistrole</b><br>\n";
+					print "Your Previous Vote is Shown Below:<ul>";
+					}
+				print "<input type='radio' name='vote' value='Yes'";
+				if ($vote eq "Yes")
+					{print " checked";}
+				print "> Yes<br>";
+				print "<input type='radio' name='vote' value='No'";
+				if ($vote eq "No")
+					{print " checked";}
+				print "> No<br>";
+				print "<input type='radio' name='vote' value='Abstain'";
+				if ($vote eq "Abstain")
+					{print " checked";}
+				print "> Abstain";
+				}
+			else
+				{
+				if ($distid)
+					{print "<b>Cast Your Vote:</b><ul>\n";}
+				else
+					{print "<b>Cast Your Vote: $printdistrole</b><ul>\n";}
+				print "<input type='radio' name='vote' value='Yes'> Yes<br>";
+				print "<input type='radio' name='vote' value='No'> No<br>";
+				print "<input type='radio' name='vote' value='Abstain'> Abstain";
+				}
+			print "<input type=hidden name=distid value=\"$did\">\n";
+			print "<input type=hidden name=pid value=\"$pid\">\n";
+			print "</ul>\n";
+			print $q->submit('propvote', '  Vote  ');
+			print "&nbsp;&nbsp;&nbsp;";
+			print $q->submit('cancel', 'Cancel');
+			print $q->end_form();
+			print "<br>\n";
+			
+			}
+		$sth2->finish;
+		}
+	}
+
+if ($irvs)
+	{
+	while (($did, $rid) = each(%distsroles))
+		{
+		my $sth3 = $dbh->prepare(qq {select i.pid, i.irvtype, i.title, i.numseats, i.voteend, v.vote from irv i LEFT JOIN votes v on i.pid = v.pid and v.gid = ? and v.distid = ? where i.phaseid = 3 order by v.vote, i.pid}); #phase 3 = voting
+		$sth3->execute($guid, $did);
+		$sth3->bind_columns(\my($pid, $irvtype, $title, $numseats, $voteend, $vote));
+		while (my $ref3 = $sth3->fetch) {
+			$voteend = DateFormats::display($voteend);
+			print "\n\n<b>ID $pid <a href='irvdetail?pid=$pid'>$title</a> - ";
+			if ($numseats == 1)
+				{print "1 Seat";}
+			else
+				{print "$numseats Seats";}
+			print "</b><br>\n";
+			print "Voting Ends on <b>$voteend</b> at $voteendtime - <a href='irvresult?pid=$pid'><b>Current Results</b></a>\n";
+			
+			if ($irvtype == 2)	#You can't change your vote for secret ballots
+				{print "<br><b>Reminder - once you have cast your ballot you may not change your vote.</b>";}
+			print "<br><br>\n";
+			
+			my $printdistrole = "";
+			$printdistrole = "$dist{$did} $role{$rid}";
+
+			if ($vote)
+				{
+				if ($irvtype == 2)
+					{
+					#You can't change your vote. There is no link to the delegate, it's a secret ballot.
+					if ($distid)
+						{print "<b>Your Vote:</b><ul>\n";}
+					else
+						{print "<b>Your Vote: $printdistrole</b><ul>\n";}
+					print "$vote</ul>\n";
+					}
+				elsif ($irvtype == 1)
+					{
+					if ($distid)
+						{print "<b>Change Your Vote:</b><br>Your Previous Votes are Shown Below:<br><br>\n";}
+					else
+						{print "<b>Change Your Vote: $printdistrole</b><br>Your Previous Votes are Shown Below:<br><br>\n";}
+					
+					#print the list of candidates, plus 2 write ins for each seat.
+					my $sth4 = $dbh->prepare(qq {select c.candid, c.cand, iv.candrank from cands c left join irvvotes iv on c.candid = iv.candid and c.pid = iv.pid and iv.voterkey = ? where c.pid = ? and c.candtype = 1 and c.actstatus = 1});
+					$sth4->execute($guid, $pid);
+					$sth4->bind_columns(\my($candid, $cand, $candrank));
+
+					print "<table cellpadding='4'>\n";
+					print "<tr><th>Candidate</th><th>Rank</th></tr>\n";
+					print $q->start_form();
+					print "\n";
+					while (my $ref4 = $sth4->fetch)
+						{
+						print "<tr><td>$cand</td>\n";
+						#print "<td><input type='text' name=\"$candid\" size='5' maxlength='2'></td></tr>\n";
+						print "<td>";
+						print $q->textfield(-name=>"$candid",
+							-default=>"$candrank",
+							-size=>5,
+							-maxlength=>2);
+						print "</td></tr>\n";
+					}
+					$sth4->finish;
+
+					print "<tr><th>Write In</th><th>Rank</th></tr>\n";
+
+					my $sql5 = qq {select count(candid) from irvvotes where pid = ? and voterkey = ?};
+					my $writtenin = $dbh->selectrow_array($sql5, undef, $pid, $guid);
+					my $writeinnum = $numseats * 2;
+					my $i = 1;
+
+					my $sth5 = $dbh->prepare(qq {select c.cand, iv.candrank from cands c, irvvotes iv where c.pid = ? and c.candtype = 2 and c.candid = iv.candid and c.pid = iv.pid and iv.voterkey = ?});
+					$sth5->execute($pid, $guid);
+					$sth5->bind_columns(\my($wcand, $wrank));
+					while (my $ref5 = $sth5->fetch)
+						{
+						my $oldcandparam = "cand$i" . "pid$pid";
+						print "<tr><td>";
+						print $q->textfield(-name=>"$oldcandparam",
+							-value => "$wcand",
+							-size => 30,
+							-maxlength => 50);
+						print "</td>\n<td>\n";
+					
+						my $oldrankparam = "rank$i" . "pid$pid";
+						print $q->textfield(-name=>"$oldrankparam",
+							-value => "$wrank",
+							-size=>5,
+							-maxlength=>2);
+						print "</td></tr>\n";
+						$i++;
+						}
+					for ($i; $i <= $writeinnum; $i++)
+						{
+						my $newcandparam = "cand$i" . "pid$pid";
+						print "<tr><td>";
+						print $q->textfield(-name=>"$newcandparam",
+							-size=>30,
+							-maxlength=>50);
+						print "</td>\n<td>\n";
+					
+						my $newrankparam = "rank$i" . "pid$pid";
+						print $q->textfield(-name=>"$newrankparam",
+							-size=>5,
+							-maxlength=>2);
+						print "</td></tr>\n";
+						}
+	
+					print "<tr><td><b>I prefer to abstain.</b></td><td>\n";
+					
+					my $sql12 = qq {select vote from votes where pid = ? and gid = ? and vote = "Abstain"};
+					my $abstain = $dbh->selectrow_array($sql12, undef, $pid, $guid);
+					if ($abstain)
+						{
+						print $q->checkbox(-name =>"abstain$pid",
+							-checked => 1,
+							-value => "abstain",
+							-label => "Abstain");
+						}
+					else
+						{
+						print $q->checkbox(-name =>"abstain$pid",
+							-value => "abstain",
+							-label => "Abstain");
+						}
+					print "</td></tr>\n<tr><td>\n";
+					print "<input type=hidden name=distid value=\"$did\">\n";
+					print "<input type=hidden name=pid value=\"$pid\">\n";
+					print $q->submit("irvvote$pid", '  Vote  ');
+					print "\n&nbsp;&nbsp;&nbsp;\n";
+					print $q->submit('cancel', 'Cancel');
+					print "\n</td><td>&nbsp;</td></tr>\n";
+					print $q->end_form();
+					print "\n</table>\n";
+					}
+				}
+			else
+				{
+				if ($distid)
+					{print "<b>Cast Your Vote:</b><br><br>\n";}
+				else
+					{print "<b>Cast Your Vote: $printdistrole</b><br><br>\n";}
+				#print the list of candidates, plus 2 write ins for each seat.
+				my $sth4 = $dbh->prepare(qq {select c.candid, c.cand from cands c where c.pid = ? and c.candtype = 1 and c.actstatus = 1});
+				$sth4->execute($pid);
+				$sth4->bind_columns(\my($candid, $cand));
+				
+				print "<table cellpadding='4'>\n";
+				
+				print $q->start_form();
+				print "<tr><th>Candidate</th><th>Rank";
+				print "</th></tr>\n";
+				while (my $ref4 = $sth4->fetch)
+					{
+					print "<tr><td>$cand</td>\n";
+					print "<td>";
+					print $q->textfield(-name=>"$candid",
+						-size=>5,
+						-maxlength=>2);
+					print "</td></tr>\n";
+					}
+				$sth4->finish;
+				
+				print "<tr><th>Write In</th><th>Rank</th></tr>\n";
+				my $writeinnum = $numseats * 2;
+				my $i;
+				for ($i = 1; $i <= $writeinnum; $i++)
+					{
+					my $candparam = "cand$i" . "pid$pid";
+					print "<tr><td>";
+					print $q->textfield(-name=>"$candparam",
+						-size=>30,
+						-maxlength=>50);
+					print "</td>\n<td>\n";
+					
+					my $rankparam = "rank$i" . "pid$pid";
+					print $q->textfield(-name=>"$rankparam",
+						-size=>5,
+						-maxlength=>2);
+					print "</td></tr>\n";
+					}
+				print "<tr><td><b>I prefer to abstain.</b></td><td>\n";
+				print $q->checkbox(-name =>"abstain$pid",
+						-value => "abstain",
+						-label => "Abstain");
+				print "</td></tr>\n<tr><td>\n";
+				print "<input type=hidden name=distid value=\"$did\">\n";
+				print "<input type=hidden name=pid value=\"$pid\">\n";
+				if ($irvtype == 2)	#confirm secret ballots
+					{print $q->submit("confirm$pid", 'Confirm');}
+				else	
+					{print $q->submit("irvvote$pid", '  Vote  ');}
+				print "\n&nbsp;&nbsp;&nbsp;\n";
+				print $q->submit('cancel', 'Cancel');
+				print "\n</td><td>&nbsp;</td></tr>\n";
+				print $q->end_form();
+				print "\n</table>\n";
+				}
+			}
+		$sth3->finish;
+		}
+	}
+$dbh->disconnect;
+
+HeadFoot::foot();
+
+exit();
+}
+
+sub confirm {
+my $title = $q->param('title');
+
+my ($did, $votesleft, $vote, $distid, $roleid, @cands, %candrank, %writeinrank, @writeins, $badname, $canderror);
+
+my $pid = 0;
+my $error = 0;
+
+$message = "";
+
+$did = $q->param('distid');
+
+if (DataCheck::irvstat($q->param('pid'), 3, "eq")) 
+	{$pid = $q->param('pid');}
+else
+	{$message .= "The ranked choice vote - $pid - you tried to vote on is not in the voting phase. ";}
+
+my $abstain = $q->param("abstain$pid");
+
+if (DataCheck::voted($guid, $pid))
+	{
+	$message .= "You have already voted on ranked choice vote $pid.";
+	$error = 1;
+	}
+
+my $dbh = DBConnect::connectr();
+my $sql1 = qq {select gr.roleid from greens_roles gr where gr.gid = ? and gr.distid = ? and gr.roleid in (1, 2)};
+my $roleid = $dbh->selectrow_array($sql1, undef, $guid, $did);
+
+my $sql2 = qq {select numseats, title from irv where pid = ?};
+my ($numseats, $title) = $dbh->selectrow_array($sql2, undef, $pid);
+
+my $sth1 = $dbh->prepare(qq {select candid from cands where pid = ? and candtype = 1 and actstatus = 1});
+$sth1->execute($pid);
+$sth1->bind_columns(\my($candid));
+	while (my $ref = $sth1->fetch)
+	{
+	push (@cands, $candid);
+	}
+$sth1->finish;
+
+if ($roleid) 
+	{$distid = $did;}
+else 
+	{$message .= "You must be a delegate from an accredited state or caucus to vote.";}
+
+if (DataCheck::votesleft($pid, $distid))
+	{$votesleft = 1;} #there are votes left to be cast - 1 is not the number of votes but means true.
+else
+	{
+	$message .= "Your delegation has already cast all of its votes for ranked choice vote $pid. Please consult with your <a href='delegates'>delegation</a>.";
+	}
+
+foreach my $cid (@cands)
+	{
+	$candrank{$cid} = $q->param($cid) if $q->param($cid) > 0;
+	}
+#get the write ins:
+my $writeinnum = ($numseats * 2);
+my $i;
+my $rcvd;
+my %countwriteins;
+for ($i = 1; $i <= $writeinnum; $i++)
+	{
+	my $pc = "cand" . $i . "pid" . $pid;
+	my $pr = "rank" . $i . "pid" . $pid;
+	my $wrin = $q->param($pc);
+	$wrin = DataCheck::name($wrin);
+	my $wrinrank = $q->param($pr);
+	if ($wrin)
+		{
+		$badname = 1 unless DataCheck::text($wrin,50);
+		push (@writeins, lc($wrin));
+		$countwriteins{lc($wrin)} = $wrinrank;
+		}
+	$writeinrank{$wrin} = $wrinrank;
+	$rcvd .= "$wrin $wrinrank ";
+	}	
+
+#get rid of any empty values.
+delete $writeinrank{""};
+delete $candrank{""};
+
+#Make sure users haven't written in the same candidate twice
+#get the number of elements in @writeins and the number of key in %writeinrank
+#if they are equal, then there are no dupe write ins, else generate an error.
+
+my $numarray = scalar @writeins;
+my $numhash = scalar keys %countwriteins;
+
+if ($numarray != $numhash)
+	{
+	$error = 1;
+	$message .= "You have entered the same write-in candidate for ranked choice vote $pid more than once. ";
+	}
+
+#Check for write ins that are on the ballot
+while (my ($candname, $candrank) = each(%writeinrank))
+	{
+	my $candid = DataCheck::ballotcand($pid, $candname);
+	if ($candid)
+		{
+		$canderror = 1;
+		}
+	}
+
+if ($canderror)
+	{
+	$message .= "You have written in a candidate who is already on the ballot. Please check your ballot for ranked choice vote $pid. ";
+	$error = 1;
+	}
+
+#make sure the rankings are in order - no dupes, or non-sequential numbers.
+#make sure the rankings are integers.
+
+my @ranks;
+my @branks = values(%candrank);
+my @wiranks = values(%writeinrank);
+
+if (@branks)
+	{@ranks = @branks;}
+if (@wiranks)
+	{@ranks = (@ranks, @wiranks)}
+
+my @sortedranks = sort {$a <=> $b} @ranks;
+my $oldval = 0;
+my ($dupe, $skip, $nonint);
+my $rankid;
+foreach $rankid (@sortedranks)
+	{
+	$dupe = 1 if $rankid == $oldval;
+	$skip = 1 unless $rankid == $oldval + 1;
+	$nonint = 1 if $rankid =~ /\D/;
+	$oldval = $rankid;
+	$rcvd .= $rankid ;
+	}
+if ($badname)
+	{
+	$message .= "Candidate names for ranked choice vote $pid may only contain letters, apostrophes, periods, dashes and spaces, and must be no longer than 50 characters. ";
+	$error = 1;
+	}
+
+if ($dupe or $skip or $nonint)
+	{
+	$message .= "Please check your rankings for ranked choice vote $pid. Use sequential numbers starting from 1, with no gaps. Do not use 0 for candidates you don't want to vote for - if you don't rank them, they won't be included in your ballot. ";
+	$error = 1;
+	}
+
+if ($q->param("abstain$pid") eq "abstain" and (keys(%candrank) or keys(%writeinrank)))
+	{
+	$message .= "You cannot vote and abstain on ranked choice vote $pid. Please choose one or the other. ";
+	$error = 1;
+	}
+elsif ($q->param("abstain$pid") eq "abstain")
+	{$vote = "Abstain";}
+elsif (keys(%candrank) or keys(%writeinrank))
+	{$vote = "Voted";}
+else
+	{
+	$message .= "Please rank candidates for ranked choice vote $pid or abstain.";
+	$error = 1;
+	}
+
+
+if ($distid and $roleid and $vote and $pid and $votesleft and ! $error) {
+	
+	HeadFoot::head($guid, $page);
+
+	print $q->h3("Please Confirm Your Ballot Choices");
+	print "<b>Ranked Choice Vote ID: $pid - $title - $numseats Seats</b><br><br>\n";
+	print "<b>Reminder - Once You've Cast Your Ballot You Cannot Change It</b><br><br>\n";
+	
+	print "<table cellpadding='4'>\n";
+	
+	print $q->start_form();
+	
+	if ($abstain)
+		{
+		print "<tr><td>You have chosen to abstain.</td></tr>\n";
+		print "<input type=hidden name=\"abstain$pid\" value='abstain'>\n";
+		}
+	else
+		{
+		print "<tr><th>Candidate</th><th>Rank</th></tr>\n";
+	
+		my $sql3 = qq {select cand from cands where candid = ?};
+		my @sortedcandranks = sort {$candrank{$a} cmp $candrank{$b}} keys %candrank;
+		foreach $_(@sortedcandranks)
+			{
+			my $candid = $_;
+			my $candrank = $candrank{$_};
+			my $ballotname = $dbh->selectrow_array($sql3, undef, $candid);
+			print "<tr><td>$ballotname</td><td>$candrank</td></tr>\n";
+			print "<input type=hidden name=\"$candid\" value=\"$candrank\">\n";
+			}
+
+		print "<tr><th>Write In</th><th>Rank</th></tr>\n";
+		$i = 1;
+		my @sortedwriteinranks = sort {$writeinrank{$a} cmp $writeinrank{$b}} keys %writeinrank;
+		foreach $_(@sortedwriteinranks)
+			{
+			my $candname = $_;
+			my $candrank = $writeinrank{$_};
+			my $candparam = "cand$i" . "pid$pid";
+			my $rankparam = "rank$i" . "pid$pid";
+			print "<tr><td>$candname</td><td>$candrank</td></tr>\n";
+			print "<input type=hidden name=\"$candparam\" value=\"$candname\">\n";
+			print "<input type=hidden name=\"$rankparam\" value=\"$candrank\">\n";
+			$i++;
+			}
+		print "\n";
+		}
+	print "<input type=hidden name=distid value=\"$distid\">\n";
+	print "<input type=hidden name=pid value=\"$pid\">\n";
+	print "<tr><td>";
+	print $q->submit("irvvote$pid", '  Vote ');
+	print "</td><td>\n";
+	print $q->submit('revise', 'Revise');
+	print "</td></tr>\n";
+	print $q->end_form();
+	print "</table>\n";
+
+	HeadFoot::foot();
+	$dbh->disconnect;
+	exit();
+	}
+else
+	{
+	$dbh->disconnect;
+	$message = "<h4><font color='red'>$message</font></h4>";
+	voteform();
+	}
+}
+
+sub propvote {
+
+my ($did, $vote, $pid, $votesleft, $distid, $roleid, $v);
+
+$message = "";
+
+my $dbh = DBConnect::connectr();
+
+my $sql1 = qq {select gr.roleid from greens_roles gr where gr.gid = ? and gr.distid = ? and gr.roleid in (1, 2)};
+
+$did = $q->param('distid');
+
+if (DataCheck::propstat($q->param('pid'), 3, "eq")) 
+	{$pid = $q->param('pid');}
+else
+	{$message .= "The proposal you tried to vote on is not in the voting phase. ";}
+	
+my $roleid = $dbh->selectrow_array($sql1, undef, $guid, $did);
+
+if ($roleid) 
+	{
+	$distid = $did;
+	my $sql = qq {select vote from votes where gid = ? and pid = ? and distid = ?};
+	$v = $dbh->selectrow_array($sql, undef, $guid, $pid, $distid);
+	}
+else 
+	{$message .= "You must be a delegate from an accredited state or caucus to vote.";}
+
+$dbh->disconnect;
+
+if ($v)	#Delegates may change their vote, but no delegation may vote over their alloted votes.
+	{
+	$votesleft = 1;
+	}
+else
+	{
+	if (DataCheck::votesleft($pid, $distid))
+		{$votesleft = 1;} #there are votes left to be cast - 1 is not the number of votes but means true.
+	else
+		{$message .= "Your delegation has already cast all of its votes for proposal $pid. Please consult with your <a href='delegates'>delegation</a>.";}
+	}
+
+if (DataCheck::vote($q->param('vote'))) 
+	{$vote = $q->param('vote');}
+else	
+	{$message .= "You may only vote 'Yes', 'No', or 'Abstain' for this proposal. ";}
+
+if ($distid and $roleid and $vote and $pid and $votesleft) {
+	my $dbh = DBConnect::connectw();
+	if ($v) {
+		my $sth2 = $dbh->prepare(qq {update votes set vote = ? where pid = ? and gid = ? and distid = ? and roleid = ?});
+		$sth2->execute($vote, $pid, $guid, $distid, $roleid);
+		}
+	else
+		{
+		my $sth3 = $dbh->prepare(qq {insert into votes (pid, gid, distid, roleid, vote) VALUES (?, ?, ?, ?, ?)});
+		$sth3->execute($pid, $guid, $distid, $roleid, $vote);
+		}
+	$dbh->disconnect;
+	print $q->redirect (-location => "vote?msg2=ok&id=$pid");
+	exit();
+	}
+else
+	{
+	$message = "<h4><font color='red'>$message</font></h4>";
+	voteform();
+	}
+}
+
+sub irvvote {
+
+my ($did, $votesleft, $vote, $distid, $roleid, @cands, %candrank, %writeinrank, @writeins, $badname, $canderror, $voted);
+
+my $repunit = lc(Conf::repunit());
+
+my $pid = 0;
+my $error = 0;
+$message = "";
+
+$did = $q->param('distid');
+
+if (DataCheck::irvstat($q->param('pid'), 3, "eq")) 
+	{$pid = $q->param('pid');}
+else
+	{$message .= "The ranked choice vote - $pid - you tried to vote on is not in the voting phase. ";}
+
+my $dbh = DBConnect::connectr();
+my $sql1 = qq {select gr.roleid from greens_roles gr where gr.gid = ? and gr.distid = ? and gr.roleid in (1, 2)};
+my $roleid = $dbh->selectrow_array($sql1, undef, $guid, $did);
+
+my $sql2 = qq {select numseats, irvtype from irv where pid = ?};
+my ($numseats, $irvtype) = $dbh->selectrow_array($sql2, undef, $pid);
+
+my $sth1 = $dbh->prepare(qq {select candid from cands where pid = ? and candtype = 1 and actstatus = 1});
+$sth1->execute($pid);
+$sth1->bind_columns(\my($candid));
+	while (my $ref = $sth1->fetch)
+	{
+	push (@cands, $candid);
+	}
+$sth1->finish;
+$dbh->disconnect;
+
+if ($roleid) 
+	{$distid = $did;}
+else 
+	{$message .= "You must be a delegate from an accredited $repunit to vote.";}
+
+   if ($irvtype == 2)	#secret ballots
+	{
+	if (DataCheck::voted($guid, $pid))
+		{
+		$message .= "You have already voted on ranked choice vote $pid.";
+		$error = 1;
+		}
+	if (DataCheck::votesleft($pid, $distid))
+		{$votesleft = 1;} #there are votes left to be cast - 1 is not the number of votes but means true.
+	else
+		{
+		$message .= "Your delegation has already cast all of its votes for ranked choice vote $pid. Please consult with your delegation.";
+		}
+	}
+else 
+	{
+	if (DataCheck::voted($guid, $pid))	#open ballot - delegates may change vote if they have already voted
+		{
+		$voted = 1;
+		$votesleft = 1;
+		}
+	else
+		{
+		if (DataCheck::votesleft($pid, $distid))	#if the delegate hasn't votes, see if the delegation has votes left
+			{
+			$votesleft = 1; #there are votes left to be cast - 1 is not the number of votes but means true.
+			}
+		else
+			{
+			$message .= "Your delegation has already cast all of its votes for ranked choice vote $pid. Please consult with your delegation.";
+			}
+		}
+	}
+
+foreach my $cid (@cands)
+	{
+	$candrank{$cid} = $q->param($cid) if $q->param($cid) > 0;
+	}
+#get the write ins:
+my $writeinnum = ($numseats * 2);
+my $i;
+my $rcvd;
+my %countwriteins;
+for ($i = 1; $i <= $writeinnum; $i++)
+	{
+	my $pc = "cand" . $i . "pid" . $pid;
+	my $pr = "rank" . $i . "pid" . $pid;
+	my $wrin = $q->param($pc);
+	$wrin = DataCheck::name($wrin);
+	my $wrinrank = $q->param($pr);
+	if ($wrin)
+		{
+		$badname = 1 unless DataCheck::text($wrin,50);
+		push (@writeins, lc($wrin));
+		$countwriteins{lc($wrin)} = $wrinrank;
+		}
+	$writeinrank{$wrin} = $wrinrank;
+	$rcvd .= "$wrin $wrinrank ";
+	}	
+
+#get rid of any empty values.
+delete $writeinrank{""};
+delete $candrank{""};
+
+#Make sure users haven't written in the same candidate twice
+#get the number of elements in @writeins and the number of key in %writeinrank
+#if they are equal, then there are no dupe write ins, else generate an error.
+
+my $numarray = scalar @writeins;
+my $numhash = scalar keys %countwriteins;
+
+if ($numarray != $numhash)
+	{
+	$error = 1;
+	$message .= "You have entered the same write-in candidate for ranked choice vote $pid more than once. ";
+	}
+
+#Check for write ins that are on the ballot
+while (my ($candname, $candrank) = each(%writeinrank))
+	{
+	my $candid = DataCheck::ballotcand($pid, $candname);
+	if ($candid)
+		{
+		$canderror = 1;
+		}
+	}
+
+if ($canderror)
+	{
+	$message .= "You have written in a candidate who is already on the ballot. Please check your ranked choice vote $pid ballot. ";
+	$error = 1;
+	}
+
+#make sure the rankings are in order - no dupes, or non-sequential numbers.
+#make sure the rankings are integers.
+
+my @ranks;
+my @branks = values(%candrank);
+my @wiranks = values(%writeinrank);
+
+if (@branks)
+	{@ranks = @branks;}
+if (@wiranks)
+	{@ranks = (@ranks, @wiranks)}
+
+my @sortedranks = sort {$a <=> $b} @ranks;
+my $oldval = 0;
+my ($dupe, $skip, $nonint);
+my $rankid;
+foreach $rankid (@sortedranks)
+	{
+	$dupe = 1 if $rankid == $oldval;
+	$skip = 1 unless $rankid == $oldval + 1;
+	$nonint = 1 if $rankid =~ /\D/;
+	$oldval = $rankid;
+	$rcvd .= $rankid ;
+	}
+if ($badname)
+	{
+	$message .= "Candidate names for ranked choice vote $pid may only contain letters, apostrophes, periods, dashes and spaces, and must be no longer than 50 characters. ";
+	$error = 1;
+	}
+
+if ($dupe or $skip or $nonint)
+	{
+	$message .= "Please check your rankings for ranked choice vote $pid. Use sequential numbers starting from 1, with no gaps. Do not use 0 for candidates you don't want to vote for - if you don't rank them, they won't be included in your ballot. ";
+	$error = 1;
+	}
+
+if (($q->param("abstain$pid")) and (keys(%candrank) or keys(%writeinrank)))
+	{
+	$message .= "You cannot vote and abstain on ranked choice vote $pid. Please choose one or the other. ";
+	$error = 1;
+	}
+elsif ($q->param("abstain$pid"))	# eq "abstain")
+	{$vote = "Abstain";}
+elsif (keys(%candrank) or keys(%writeinrank))
+	{$vote = "Voted";}
+else
+	{
+	$message .= "Please rank candidates for ranked choice vote $pid or abstain.";
+	$error = 1;
+	}
+
+if ($distid and $roleid and $vote and $pid and $votesleft and ! $error) 
+	{
+	my $voterkey;
+	if ($irvtype == 2)
+		{
+		my $now = time();
+		my $salt = rand($now);
+		$salt =~ s/\.//;
+		$voterkey = $pid . $session->param('_SESSION_ID') . $salt;
+		}
+	else
+		{
+		$voterkey = $guid;
+		}
+
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+
+		my $sth2 = $dbh->prepare(qq {insert into irvvotes (pid, voterkey, candid, candrank) VALUES(?, ?, ?, ?)});
+
+		if ($voted)	#change votes
+			{
+			my $sth9 = $dbh->prepare(qq {update votes set vote = ? where pid = ? and gid = ?});
+			my $sth10 = $dbh->prepare(qq {delete from irvvotes where pid = ? and voterkey = ?});
+			$sth9->execute($vote, $pid, $guid);
+			$sth10->execute($pid, $guid);
+			}
+		else		#cast votes
+			{
+			my $sth3 = $dbh->prepare(qq {insert into votes (pid, gid, distid, roleid, vote) VALUES (?, ?, ?, ?, ?)});
+			$sth3->execute($pid, $guid, $distid, $roleid, $vote);
+			}
+
+		while (my ($candid, $candrank) = each(%candrank))
+			{
+			$sth2->execute($pid, $voterkey, $candid, $candrank);
+			}
+
+		#add write ins. See if the write in already exists, if so, use their candid. Else, insert a record into the cands table.
+		while (my ($candname, $candrank) = each(%writeinrank))
+			{
+			my $candid = DataCheck::candname($pid, $candname);
+			if ($candid)
+				{
+				$sth2->execute($pid, $voterkey, $candid, $candrank);
+				}
+			else
+				{
+				#add a record to the candidates table. get the candid. add a record to the irvvotes table.
+				my $sql3 = qq {select candid from candid};
+				my $cid = $dbh->selectrow_array($sql3);
+				my $sth4 = $dbh->prepare(qq {insert into cands (candid, pid, cand, candtype) VALUES(?, ?, ?, 2)});
+				$sth4->execute($cid, $pid, $candname);
+				$sth2->execute($pid, $voterkey, $cid, $candrank);
+				my $newcandid = $cid + 1;
+				my $sth5 = $dbh->prepare(qq {update candid set candid = ?});
+				$sth5->execute($newcandid);
+				}
+			}
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "Your vote was not entered due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		}
+	else
+		{
+		if (($irvtype == 2) and ($vote eq "Voted"))	#send email with ballot key for secret ballots
+			{
+			my $acronym = Conf::acronym();
+			my $name = $session->param('name');
+			my $sql4 = qq {select email from greens where gid = ?};
+			my $to = $dbh->selectrow_array($sql4, undef, $guid);
+			my $subject = "Your Ballot Key for Ranked Choice Vote $pid";
+			my $mailmsg = "Dear $name,\n\n";
+			$mailmsg .= "Here is the link to your ballot for $acronym ranked choice vote $pid\n";
+			$mailmsg .= "You may share this link with anyone you want, or you\n";
+			$mailmsg .= "may keep it secret - it's your choice. To view your ballot\n";
+			$mailmsg .= "either click on the link below or paste it into your browser.\n";
+			$mailmsg .= "It may wrap over several lines, so be sure to include the entire link.\n\n";
+			$mailmsg .= "Link to your ballot:\n\n";
+			my $scripturl = Conf::scripturl();
+			$mailmsg .= "$scripturl?pid=$pid&key=$voterkey\n\n";
+			$mailmsg .= "If you lose this link, nobody will be able to retrieve it for you,\n";
+			$mailmsg .= "so please keep it in a safe place and bookmark the page.\n\n";
+			$mailmsg .= "Thank you and have a wonderful day!\n\n";
+			$mailmsg .= "--This is an automated message generated by your vote.\n";
+			Email::email($to, $subject, $mailmsg);
+			$dbh->disconnect;
+			print $q->redirect (-location => "vote?msg=$voterkey&id=$pid");
+			exit();
+			}
+		else
+			{
+			print $q->redirect (-location => "vote?msg1=ok&id=$pid");
+			exit();
+			}
+		}
+	}
+else
+	{
+	$message = "<h4><font color='red'>$message</font></h4>";
+	voteform();
+	}
+}

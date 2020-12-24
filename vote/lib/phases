@@ -1,0 +1,481 @@
+#!/usr/bin/perl -w
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+#Nightly Voting Maintenance Tasks run from a cron job
+#Run this at Midnight Eastern Time
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use DBConnect;
+use DataCheck;
+use DateFormats;
+use Email;
+use POSIX;
+use Text::Wrap qw($columns &wrap);
+my $voteendtime = Conf::voteendtime();
+
+phases();
+
+sub phases {
+
+#Change the phases of proposals and ranked choice votes, based on their discussion and voting dates.
+
+my $today = DateFormats::today();
+my $todayplus2 = DateFormats::future(2); 
+my $tomorrow = DateFormats::future(1);
+
+my ($pid, $date, $proptype);
+
+my $dbh = DBConnect::connectw();
+
+my $sth1 = $dbh->prepare(qq {update proposals set phaseid = ? where pid = ?});
+my $sth2 = $dbh->prepare(qq {update irv set phaseid = ? where pid = ?});
+
+#New to Discussion
+my $sth3 = $dbh->prepare(qq {select p.pid, p.discussbegin, "p" as proptype from proposals p where p.phaseid = 1 union select i.pid, i.discussbegin, "i" as proptype from irv i where i.phaseid = 1 order by pid});
+$sth3->execute();
+$sth3->bind_columns(\($pid, $date, $proptype));
+while (my $ref = $sth3->fetch)
+	{
+	if (DataCheck::eqdates($today, $date))
+		{
+		if ($proptype eq "p")
+			{
+			$sth1->execute(2, $pid);
+			#send email to the listserv
+			my ($to, $replyto, $subject, $message) = discusspropmail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		else
+			{
+			$sth2->execute(2, $pid);
+			#send email to the listserv
+			my ($to, $replyto, $subject, $message) = discussirvmail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		}
+	}
+$sth3->finish;
+
+#Discussion to Voting
+my $sth4 = $dbh->prepare(qq {select p.pid, p.votebegin, "p" as proptype from proposals p where p.phaseid = 2 union select i.pid, i.votebegin, "i" as proptype from irv i where i.phaseid = 2 order by pid});
+$sth4->execute();
+$sth4->bind_columns(\($pid, $date, $proptype));
+while (my $ref = $sth4->fetch)
+	{
+	if (DataCheck::eqdates($today, $date))
+		{
+		if ($proptype eq "p")
+			{
+			#move to the voting phase
+			$sth1->execute(3, $pid);
+			#send email to the listserv
+			my ($to, $replyto, $subject, $message) = votepropmail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		else
+			{
+			#move to the voting phase
+			$sth2->execute(3, $pid);
+			#send email to the listserv
+			my ($to, $replyto, $subject, $message) = voteirvmail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		}
+	}
+$sth4->finish;
+
+#Voting to Certify or Closed is done in voteend, which is run at 3AM Eastern Time (Midnight Pacific Time)
+
+#2 Day Warning for Vote End
+
+my $sth5 = $dbh->prepare(qq {select p.pid, p.voteend, "p" as proptype from proposals p where p.phaseid = 3 union select i.pid, i.voteend, "i" as proptype from irv i where i.phaseid = 3 order by pid});
+$sth5->execute();
+$sth5->bind_columns(\($pid, $date, $proptype));
+while (my $ref = $sth5->fetch)
+	{
+	if (DataCheck::eqdates($todayplus2, $date))
+		{
+		if ($proptype eq "i")
+			{
+			my ($to, $replyto, $subject, $message) = warnirvmail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		elsif ($proptype eq "p")
+			{
+			my ($to, $replyto, $subject, $message) = warnpropmail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		}
+	}
+$sth5->finish;
+
+
+#Finally, clear out all "sent reminders from the signons table, so that users can get more email reminders of their password.
+#There is a limit of 4 per day.
+
+my $sth7 = $dbh->prepare(qq {update signons set sentreminder = 0});
+$sth7->execute();
+
+$dbh->disconnect;
+
+#And clean up old sessions that didn't disappear
+
+chdir (qw(TEMP));
+
+my @f = <cgisess*>;
+
+foreach my $f(@f) {
+        chomp $f;
+        if (-M $f > .5)
+                {unlink ($f);}
+        }
+exit;
+}
+
+sub discusspropmail {
+#Sends a Discussion has begun for Proposal $pid email to the listserv
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select p.title, g.fname, g.lname, g.email, p.discussbegin, p.discussend, p.votebegin, p.voteend, p.background, p.proposal, p.resources, p.reference from proposals p, greens g where p.pid = ? and p.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $fname, $lname, $email, $discussbegin, $discussend, $votebegin, $voteend, $bgtext, $prtext, $restext, $reftext) = $sth1->fetchrow_array;
+$sth1->finish;
+$dbh->disconnect;
+
+$columns = 72;
+my @bgtext = ($bgtext);
+my @prtext = ($prtext);
+my @restext = ($restext);
+my @reftext = ($reftext);
+
+my $background = wrap("", "", @bgtext);
+my $proposal = wrap("", "", @prtext);
+my $resources = wrap("", "", @restext);
+my $reference = wrap("", "", @reftext);
+
+1 while $background =~ s/(\n\n\n)/\n\n/mg;
+1 while $proposal =~ s/(\n\n\n)/\n\n/mg;
+1 while $resources =~ s/(\n\n\n)/\n\n/mg;
+1 while $reference =~ s/(\n\n\n)/\n\n/mg;
+
+$discussbegin = DateFormats::display($discussbegin);
+$discussend = DateFormats::display($discussend);
+$votebegin = DateFormats::display($votebegin);
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();
+	
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "Discussion Has Begun on $acronym Proposal: ID $pid - $title";
+my $msg = "Discussion has begun for the following proposal:\n\n";
+
+$msg .= "Proposal ID: $pid \n";
+$msg .= "Proposal: $title \n";
+$msg .= "Floor Manager: $fname $lname, $email \n";
+$msg .= "Discussion Dates: $discussbegin - $discussend \n";
+$msg .= "Voting Dates: $votebegin - $voteend \n\n";
+$msg .= "Voting ends at $voteendtime\n\n";
+
+$msg .= "The GP-US strives for consensus, which involves several steps,\n taken in order..\n\n";
+$msg .= "Clarifying questions and responses from the group making the proposal.\n";
+$msg .= "Airing of concerns and discussion about how to improve the proposal\nby taking into consideration those concersn\n";
+$msg .= "Call for consensus on the final proposal.\n";
+$msg .= "\n";
+
+$msg .= "Background: $background\n\n";
+$msg .= "Proposal: $proposal\n\n";
+$msg .= "Resources: $resources\n\n";
+$msg .= "References: $reference\n\n";
+
+$msg .= "Full details are available at:\n\n";
+my $scripturl = Conf::scripturl();
+$msg .= "$scripturl/propdetail?pid=$pid\n\n";
+$msg .= "Please send your comments to $to.\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}
+
+sub discussirvmail {
+#Sends a Discussion has begun for Ranked Choice Vote ID $pid email to the listserv
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select i.title, g.fname, g.lname, g.email, i.numseats, i.discussbegin, i.discussend, i.votebegin, i.voteend from irv i, greens g where i.pid = ? and i.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $fname, $lname, $email, $numseats, $discussbegin, $discussend, $votebegin, $voteend) = $sth1->fetchrow_array;
+$sth1->finish;
+
+$discussbegin = DateFormats::display($discussbegin);
+$discussend = DateFormats::display($discussend);
+$votebegin = DateFormats::display($votebegin);
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();
+
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "Discussion Has Begun on $acronym Ranked Choice Vote: ID $pid - $title";
+my $msg = "Discussion has begun for the following ranked choice vote:\n\n";
+$msg .= "Ranked Choice Vote ID: $pid \n";
+$msg .= "Ranked Choice Vote: $title \n";
+$msg .= "Number of Seats: $numseats \n";
+$msg .= "Ranked Choice Vote Administrator: $fname $lname, $email \n";
+$msg .= "Discussion Dates: $discussbegin - $discussend \n";
+$msg .= "Voting Dates: $votebegin - $voteend \n";
+$msg .= "Voting ends at $voteendtime\n\n";
+$msg .= "Candidates:\n\n";
+
+my $sth2 = $dbh->prepare(qq {select cand from cands where pid = ? and candtype = 1});
+$sth2->execute($pid);
+$sth2->bind_columns(\my($cand));
+while (my $ref = $sth2->fetch)
+	{
+	$msg .= "$cand\n";
+	}
+$sth2->finish;
+$dbh->disconnect;
+
+$msg .= "Full details are available at:\n\n";
+
+my $scripturl = Conf::scripturl();
+
+$msg .= "$scripturl/irvdetail?pid=$pid\n\n";
+$msg .= "Please send your comments to $to.\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}
+
+sub votepropmail {
+#Sends a Voting has begun for Proposal ID $pid email to the listserv
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select p.title, g.fname, g.lname, g.email, p.votebegin, p.voteend, p.background, p.proposal, p.resources, p.reference from proposals p, greens g where p.pid = ? and p.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $fname, $lname, $email, $votebegin, $voteend, $bgtext, $prtext, $restext, $reftext) = $sth1->fetchrow_array;
+$sth1->finish;
+$dbh->disconnect;
+
+$columns = 72;
+my @bgtext = ($bgtext);
+my @prtext = ($prtext);
+my @restext = ($restext);
+my @reftext = ($reftext);
+
+my $background = wrap("", "", @bgtext);
+my $proposal = wrap("", "", @prtext);
+my $resources = wrap("", "", @restext);
+my $reference = wrap("", "", @reftext);
+
+1 while $background =~ s/(\n\n\n)/\n\n/mg;
+1 while $proposal =~ s/(\n\n\n)/\n\n/mg;
+1 while $resources =~ s/(\n\n\n)/\n\n/mg;
+1 while $reference =~ s/(\n\n\n)/\n\n/mg;
+
+$votebegin = DateFormats::display($votebegin);
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();
+	
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "Voting Has Begun on $acronym Proposal: ID $pid - $title";
+my $msg = "Voting has begun for the following proposal:\n\n";
+$msg .= "Proposal ID: $pid \n";
+$msg .= "Proposal: $title \n";
+$msg .= "Floor Manager: $fname $lname, $email \n";
+$msg .= "Voting Dates: $votebegin - $voteend \n\n";
+$msg .= "Voting ends at $voteendtime\n\n";
+$msg .= "Background: $background\n\n";
+$msg .= "Proposal: $proposal\n\n";
+$msg .= "Resources: $resources\n\n";
+$msg .= "References: $reference\n\n";
+
+$msg .= "Please log in to vote at:\n\n";
+
+my $scripturl = Conf::scripturl();
+
+$msg .= "$scripturl/vote\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}
+
+sub voteirvmail {
+#Sends a Voting has begun for Ranked Choice Vote ID $pid email to the listserv
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select i.title, g.fname, g.lname, g.email, i.numseats, i.votebegin, i.voteend from irv i, greens g where i.pid = ? and i.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $fname, $lname, $email, $numseats, $votebegin, $voteend) = $sth1->fetchrow_array;
+$sth1->finish;
+
+$votebegin = DateFormats::display($votebegin);
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();
+
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "Voting Has Begun on $acronym Ranked Choice Vote: ID $pid - $title";
+my $msg = "Voting has begun for the following ranked choice vote:\n\n";
+$msg .= "Ranked Choice Vote ID: $pid \n";
+$msg .= "Ranked Choice Vote: $title \n";
+$msg .= "Number of Seats: $numseats \n";
+$msg .= "Ranked Choice Vote Administrator: $fname $lname, $email \n";
+$msg .= "Voting Dates: $votebegin - $voteend \n";
+$msg .= "Voting ends at $voteendtime\n\n";
+$msg .= "Candidates:\n\n";
+
+my $sth2 = $dbh->prepare(qq {select cand from cands where pid = ? and candtype = 1});
+$sth2->execute($pid);
+$sth2->bind_columns(\my($cand));
+while (my $ref = $sth2->fetch)
+	{
+	$msg .= "$cand\n";
+	}
+$sth2->finish;
+$dbh->disconnect;
+
+$msg .= "Please log in to vote at:\n\n";
+
+my $scripturl = Conf::scripturl();
+
+$msg .= "$scripturl/vote\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}
+
+sub warnpropmail {
+#Sends a Vote Ends in 2 Days email to the listserv - for Proposals
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select p.title, g.fname, g.lname, g.email, p.voteend, p.background, p.proposal, p.resources, p.reference from proposals p, greens g where p.pid = ? and p.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $fname, $lname, $email, $voteend, $bgtext, $prtext, $restext, $reftext) = $sth1->fetchrow_array;
+$sth1->finish;
+$dbh->disconnect;
+
+$columns = 72;
+my @bgtext = ($bgtext);
+my @prtext = ($prtext);
+my @restext = ($restext);
+my @reftext = ($reftext);
+
+my $background = wrap("", "", @bgtext);
+my $proposal = wrap("", "", @prtext);
+my $resources = wrap("", "", @restext);
+my $reference = wrap("", "", @reftext);
+
+1 while $background =~ s/(\n\n\n)/\n\n/mg;
+1 while $proposal =~ s/(\n\n\n)/\n\n/mg;
+1 while $resources =~ s/(\n\n\n)/\n\n/mg;
+1 while $reference =~ s/(\n\n\n)/\n\n/mg;
+
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();
+	
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "Voting Ends in 2 Days on $acronym Proposal: ID $pid - $title";
+my $msg = "Voting ends in 2 days for the following proposal:\n\n";
+$msg .= "Proposal ID: $pid \n";
+$msg .= "Proposal: $title \n";
+$msg .= "Floor Manager: $fname $lname, $email \n";
+$msg .= "Voting ends at $voteendtime\n\n";
+$msg .= "Background: $background\n\n";
+$msg .= "Proposal: $proposal\n\n";
+$msg .= "Resources: $resources\n\n";
+$msg .= "References: $reference\n\n";
+
+$msg .= "If you haven't already voted, please do so at:\n\n";
+
+my $scripturl = Conf::scripturl();
+
+$msg .= "$scripturl/vote\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}
+
+sub warnirvmail {
+#Sends a Vote Ends in 2 Days email to the listserv - for Ranked Choice Votes
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select i.title, g.fname, g.lname, g.email, i.numseats, i.voteend from irv i, greens g where i.pid = ? and i.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $fname, $lname, $email, $numseats, $voteend) = $sth1->fetchrow_array;
+$sth1->finish;
+
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();
+	
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "Voting Ends in 2 Days on $acronym Ranked Choice Vote: ID $pid - $title";
+my $msg = "Voting ends in 2 days for the following ranked choice vote:\n\n";
+$msg .= "Ranked Choice Vote ID: $pid \n";
+$msg .= "Ranked Choice Vote: $title \n";
+$msg .= "Number of Seats: $numseats \n";
+$msg .= "Ranked Choice Vote Administrator: $fname $lname, $email \n";
+$msg .= "Voting ends at $voteendtime\n\n";
+$msg .= "Candidates:\n\n";
+
+my $sth2 = $dbh->prepare(qq {select cand from cands where pid = ? and candtype = 1});
+$sth2->execute($pid);
+$sth2->bind_columns(\my($cand));
+while (my $ref = $sth2->fetch)
+	{
+	$msg .= "$cand\n";
+	}
+$sth2->finish;
+$dbh->disconnect;
+
+$msg .= "\n\nIf you haven't already voted, please do so at:\n\n";
+
+my $scripturl = Conf::scripturl();
+
+$msg .= "$scripturl/vote\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}

@@ -1,0 +1,316 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+my $acdid = $q->param('distid');
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif (($session->param('roles') =~ /[45]/) or (DataCheck::valrole($guid, 7, 2)))
+	 #only admins and sc members or the AC co-chairs (roleid 7, commid 2) can modify committees
+	{
+	if ($q->param('adddist') or $q->param('moddist')) {
+		adddist();
+		}
+	elsif ($q->param('cancel')) {
+		if ($session->param('roles') =~ /[45]/)
+			{print $q->redirect (-location => "admindistricts");}
+		else
+			{print $q->redirect (-location => "contacts?did=$acdid");}
+		exit();
+		}
+	else {
+		distform();
+		}
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+
+sub distform {
+
+my $distid = $q->param('distid');
+
+my (@distlist, %distlist, $did, $disttype, $district, $disttypeid, $voters, $maxvoters, $accreddate, $website, $actstatus);
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select disttypeid, disttype from disttypes order by disttype});
+$sth1->execute();
+$sth1->bind_columns(\($did, $disttype));
+while (my $ref = $sth1->fetch) {
+	$distlist{$did} = "$disttype";
+	}
+$sth1->finish;
+
+$distlist{""} = "";
+
+my @tempdistlist = sort {$distlist{$a} cmp $distlist{$b}} keys %distlist;
+
+foreach $_(@tempdistlist)
+	{
+	push(@distlist, $_);
+	}
+
+HeadFoot::head($guid, $page);
+print $message;
+print $q->start_form();
+
+if ($distid) {
+	my $sth2 = $dbh->prepare(qq {select d.district, d.disttypeid, d.voters, d.maxvoters, d.accreddate, d.website, d.actstatus from districts d where d.distid = ?});
+	$sth2->execute($distid);
+	($district, $disttypeid, $voters, $maxvoters, $accreddate, $website, $actstatus) = $sth2->fetchrow_array;
+	$sth2->finish;
+	print "<h3>Modify Delegation</h3>\n";
+	}
+else 
+	{print "<h3>Add New Delegation</h3>\n";}
+
+$dbh->disconnect;
+
+print "<table cellpadding='4'>\n";
+print "<tr><th>Delegation</th><td>";
+print $q->textfield(-name => "district",
+	-size => 30,
+	-maxlength => 30,
+	-default => $district);
+print "</td></tr>\n";
+
+print "<tr><th>Type</th><td>";
+print $q->popup_menu(-name => 'disttypeid',
+	-values => \@distlist,
+	-labels => \%distlist,
+	-default => $disttypeid);
+print "</td></tr>\n";
+
+$voters = 0 unless $voters;
+print "<tr><th>Number of Currently Allowed Voters</th><td>";
+print $q->textfield(-name => "voters",
+	-size => 10,
+	-maxlength => 5,
+	-default => $voters);
+print "</td></tr>\n";
+
+$maxvoters = 0 unless $maxvoters;
+print "<tr><th>Maximum Number of Allowed Voters</th><td>";
+print $q->textfield(-name => "maxvoters",
+	-size => 10,
+	-maxlength => 5,
+	-default => $maxvoters);
+print "</td></tr>\n";
+
+print "<tr><th>Accreditation Date</th><td>";
+print $q->textfield(-name => "accreddate",
+	-size => 10,
+	-maxlength => 10,
+	-default => $accreddate);
+print " YYYY-MM-DD Format</td></tr>\n";
+
+print "<tr><th>Website</th><td>";
+print $q->textfield(-name => "website",
+	-size => 30,
+	-maxlength => 100,
+	-default => $website);
+print "</td></tr>\n";
+
+print "<tr><th>Status</th><td>";
+print $q->radio_group(-name =>'actstatus',
+	-values => [1, 0],
+	-default => $actstatus,
+	-labels => {1 => 'Accredited', 0 => 'Unaffiliated'});
+print "</td></tr>\n";
+
+print "<tr><td>&nbsp;</td><td>";
+
+if ($distid) { 
+	print $q->hidden('distid', "$distid");
+	print "&nbsp;&nbsp;&nbsp;";
+	print $q->submit('moddist', 'Modify');
+	}
+else {
+	print $q->submit('adddist', '  Add  ');
+	}
+print "&nbsp;&nbsp;&nbsp;";
+
+print $q->submit('cancel', 'Cancel');
+
+print "</td></tr>\n</table>\n";
+print $q->end_form();
+HeadFoot::foot();
+exit();
+}
+
+sub adddist{
+#Check the data:
+$message = "";
+my ($errors, $distid, $district, $disttypeid, $actstatus, $voters, $maxvoters, $accreddate, $website);
+
+if (DataCheck::distid($q->param('distid')) == 1)
+	{$distid = $q->param('distid');}
+
+if ($distid)
+	{
+	$district = DataCheck::name($q->param('district'));
+	$message .= "Delegation name required. " unless $district;
+	}
+else
+	{
+	if (DataCheck::distname($q->param('district')) == 1)
+		{$message .= "That Delegation already exists! ";}
+	else
+		{
+		$district = DataCheck::name($q->param('district'));
+		$message .= "Delegation name required. " unless $district;
+		}
+	}
+if (DataCheck::disttype($q->param('disttypeid')) == 1)
+	{$disttypeid = $q->param('disttypeid');}
+else
+	{$message .= "Type required. ";}
+	
+$message .= "Status required. " unless $q->param('actstatus');
+
+if ($q->param('actstatus') == 1)
+	{
+	$actstatus = 1;
+	$voters = DataCheck::num($q->param('voters'));
+	unless ($voters)
+		{
+		$message .= "Number of current voters required. ";
+		$errors = 1;
+		}
+	$maxvoters = DataCheck::num($q->param('maxvoters'));
+	unless ($maxvoters)
+		{
+		$message .= "Maximum number of voters required. ";
+		$errors = 1;
+		}
+	if ($voters > $maxvoters)
+		{
+		$message .= "Number of currently allowed voters is greater than the maximum number of allowed voters. ";
+		$errors = 1;
+		}
+	if (DataCheck::date($q->param('accreddate')))
+		{$accreddate = $q->param('accreddate');}
+	else
+		{
+		$message .= "Invalid Date. ";
+		$errors = 1;
+		}
+	}
+else
+	{
+	$actstatus = 0;
+	$voters = 0;
+	$maxvoters = 0;
+	}
+if (DataCheck::link($q->param('website'), 100))
+	{$website = $q->param('website');}
+else
+	{$message .= "Invalid URL. ";}
+
+if ($district and $disttypeid and ! $errors) {
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		if ($distid)
+			{
+			if ($actstatus)
+				{
+				my $sth = $dbh->prepare(qq {update districts set district = ?, disttypeid = ?, voters = ?, maxvoters = ?, accreddate = ?, website = ?, actstatus = ? where distid = ?});
+				$sth->execute($district, $disttypeid, $voters, $maxvoters, $accreddate, $website, $actstatus, $distid);
+				}
+			else
+				{
+				my $sth1 = $dbh->prepare(qq {update districts set district = ?, disttypeid = ?, voters = 0, maxvoters = 0, accreddate = 0, website = ?, actstatus = 0 where distid = ?});
+				my $sth2 = $dbh->prepare(qq {update greens_roles set actstatus = 0 where distid = ? and roleid < 3});
+				$sth1->execute($district, $disttypeid, $website, $distid);
+				$sth2->execute($distid);
+				}
+			}
+		else
+			{
+			if ($actstatus)
+				{
+				my $sth1 = $dbh->prepare(qq {insert into districts (district, disttypeid, voters, maxvoters, accreddate, website, actstatus) VALUES(?, ?, ?, ?, ?, ?, ?)});
+				$sth1->execute($district, $disttypeid, $voters, $maxvoters, $accreddate, $website, $actstatus);
+				}
+			else
+				{
+				my $sth1 = $dbh->prepare(qq {insert into districts (district, disttypeid, voters, maxvoters, website, actstatus) VALUES(?, ?, 0, 0, ?, 0)});
+				$sth1->execute($district, $disttypeid, $website);
+				}
+			}
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The district was not entered due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		distform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		if ($session->param('roles') =~ /[45]/)
+			{print $q->redirect (-location => "admindistricts");}
+		else
+			{print $q->redirect (-location => "contacts?did=$distid");}
+		exit();
+		}
+	}
+else {
+	$message = "<font color='red'>$message</font><br>\n";
+	$q->param(district => $district);
+	$q->param(voters => $voters);
+	$q->param(maxvoters => $maxvoters);
+	distform();
+	}
+}

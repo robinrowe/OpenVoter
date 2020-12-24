@@ -1,0 +1,161 @@
+Directions for Installing Vote
+
+Please read this file all the way through before installing!
+
+This program was written and tested on a Debian GNU/Linux system and also tested and put into production on a FreeBSD system, using the Apache web server. It will probably work on a Windows system, but you would have to change the #! line on all of the scripts and pay attention to the paths for libraries, the temp and ballots directories. You will also need to use whatever job scheduler Windows has instead of cron and alter the jobs accordingly. I gave up the habit, so I'm not sure.
+
+REQUIREMENTS:
+
+Database:
+
+MySQL - a version that supports InnoDB tables and transactions. All of the 4.0x versions support this. See the MySQL manual for how to enable InnoDB tables. I don't know if this will work with Postgresql. I plan to find out.
+
+Installed Perl Modules:
+
+CGI
+CGI::Carp
+DBI
+DBD::MySQL
+CGI::Session
+POSIX
+Text::Wrap
+HTML::Parser
+
+And the setup.pl script uses Tie::File and Fcntl
+
+These are pretty much standard Perl modules though and should already be installed. If you don't have these installed, they can be installed in the same library directory as the custom modules included with this program. Or, you could ask the server admin to install them - please ask nicely!
+
+Ability to set up cron jobs via crontab.
+
+DIRECTORIES and PERMISSIONS:
+
+1. The program uses your logo image file and a progressbar image file. 
+These go in a subdirectory of your www readable directory.
+These need to be world readable.
+
+2. The script go into a subdirectory of your cgi-bin directory. 
+Suggested name: vote - but it's your choice what to call it.
+The scripts need to be executable.
+
+3. A non-world readable Library directory for the Perl modules that came with this program and the scripts that run from a cron job.
+Suggested name: /usr/home/YOURUSERNAME/lib/vote
+The Perl modules (*.pm) need to be world readable but don't need to be executable.
+The scripts (phases and voteend) need to be executable.
+
+4. A temp directory that you control. This is used to store the cgi_sessions files. 
+Suggested name: /usr/home/YOURUSERNAME/lib/vote/temp
+This directory must be world readable and writeable as CGI::Session needs to write to it and the scripts need to be able to read these files.
+
+5. A ballots directory, called ballots, under your lib/vote directory. This is used to store the ballot and results file that the ChoiceCounter.pm module and the certifyirv script use.
+Suggested name: /usr/home/YOURUSERNAME/lib/vote/ballots
+This directory must be world readable and writeable.
+
+PREPARING FOR INSTALLATION:
+
+Create a database:
+
+If you are using an existing database, please read the create.pl script. It's short and could save you a lot of trouble. 
+If you are using an existing database, please be sure that there are no conflicts between your existing tables and the ones that create.pl will create. NB - create.pl WILL DROP TABLES.
+If there are conflicts, you'll need to edit the scripts and modules to change the table names to whatever you change them to in your database and in the create.pl script. 
+
+Some Editing:
+
+1. Run setup.pl
+2. Edit the Conf.pm file. I've left the GP-US defaults as a sample, but you must use the details for your organization.
+
+INSTALLATION:
+
+1. If you haven't done so already, that is, if you were doing this work from a local copy, put the files up in the proper directories on your server and make sure that the correct permissions are set.
+
+2. From a command line, do: perl -w create.pl
+IMPORTANT - read the section above about your database. create.pl drops tables, and doesn't care if you are already using tables of the same name.
+This creates the tables in your database and populates some tables with data the scripts expect.
+
+3. Update cron. A sample crontab.txt file is included in the lib directory. Two scripts need to be run. The phases script runs at 1 minute after midnight. The voteend script runs at whatever time voting ends. 
+
+Note - it's assumed that voting ends sometime after midnight server time and that your server is running local time, not GMT. If that is an incorrect assumption, then you will need to edit the voteend script. The voteend script checks to see if voting ended yesterday. All you need to do is change the following line
+from:
+my $yesterday = DateFormats::past(1);
+to:
+my $yesterday = DateFormats::past(0);
+
+(Of course you could change this to $today and then change the other references to $yesterday to $today!)
+
+and the voteend script will then look for votes that are ending today.
+
+If your server is running on GMT instead of localtime, then adjust the time that you run phases to correspond to 1 minute after midnight localtime.
+
+The cron jobs are set to run /usr/bin/nice - you should adjust these according to the path for nice (which runs the jobs at a "nice" system priority).
+
+If you have other cron jobs running, add the jobs to whatever file you use to update your crontab (in this example, crontab.txt) then from the same directory as your crontab.txt file is located do: crontab crontab.txt
+
+To see what your crontab file contains, do crontab -l
+
+4. Delete the create.pl script - it will recreate your database and you wouldn't want someone to run it accidently once you're in production! And delete the setup.pl file too - not that it will work after the first time, but you don't want anyone messing with your files.
+
+5. Login as the admin user you created and try it out! At this point, you should be done and all you need to do is add some delegations and some more users via the vote program, and add some proposals or elections to vote on. If you want to track committees, you can do that too.
+
+CHANGING THE APPEARANCE:
+
+The HeadFoot.pm module contains a style sheet that all the scripts use and which you can edit.
+Use your own logo, of course!
+You can edit green.gif to match your color scheme or just create a new image file of 1x10 pixels with whatever color you want. The file name goes into Conf.pm.
+Other than that, all the scripts have their own layouts. I'm sure there's a better way, but this worked. I like CGI.pm and haven't tried any of the template modules yet.
+
+SUPPORT:
+
+As the author of this program, I will support you if you need help installing the program. For help with your environment, I'd suggest you try your usual resources. Systems are not my area of expertise, though if I've run across your problem before, I'll be glad to tell you what I know about it.
+
+If you find any bugs (why not? - I've done a lot of testing and the system is in use by the GP-US, but...) please report them to me and I'll get them fixed as soon as possible.
+
+Please do not direct your users to contact me and please do not use my address as the "admin" address. I'll be glad to help you out with the questions you get, of course:)
+
+STILL TO DO LIST:
+
+new page - help - a help file with the admin email address and user documentation
+
+backup script to dump the database
+
+contacts - display other info (state co-chairs or the local equivalent, etc.)
+
+certifyirv - Better program flow. It's functional, but probably a little confusing for the user.
+Better handling of write-ins - don't allow write ins who have an equivalent to be used as an equivalent by another write-in.
+use StvCounter.pm instead of ChoiceCounter.pm
+add confirmation screen for candidates.
+
+admindel - send email when new delegates are created.
+
+login - Have users enter their first and last names to get a userid reminder
+
+new page for each delegate, with bio, committees, voting history, etc.
+
+new script to allow users to change their contact info and passwords.
+
+Allow proposals to be chosen with ranked choices.
+
+Add a lot of comments to all the scripts, modules, etc.
+
+THOUGHTS FOR THE FUTURE:
+
+Voting on amendments as part of a proposal?
+
+Online consensus?
+
+LICENSE:
+
+This program is licensed under the GPL, which has been included, with the exception of ChoiceCounter.pm, which is licensed separately by Jonathan Lundell. I made a few slight changes to his program that deal with reading from and writing to a file instead of using <STDIN> and <STDOUT>.
+
+ACKNOWLEDGEMENTS:
+
+This is a rewrite of the original voting pages program written in PHP by Kendra Markle. The original program was written under contract to the GP-US. Vote has been entirely rewritten in Perl, and the database design has changed as well. My thanks to Kendra for her previous work.
+
+I'd also like to thank Hugh Esco for his recommendation which resulted in the Conf.pm module and the setup.pl script. Using his suggestion has enabled me to make this program easier to configure.
+
+Thanks to Jonathan Lundell for ChoiceCounter.pl and StvCounter.pl, which made it possible to include ranked choice voting as an option.
+
+Thanks to Cameron Spitzer for his encouragement and support and all the work he does for us Greens.
+
+And thanks to all of my family and friends who put up with me sitting at the computer for so many hours.
+
+Susan Dridi - April 18, 2005.
+

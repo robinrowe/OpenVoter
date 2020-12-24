@@ -1,0 +1,144 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=0;  # no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session(undef, $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if (! $guid)
+	{
+	$session->delete();
+	$guid = "";
+	}
+
+start();
+
+sub start {
+
+HeadFoot::head($guid, $page);
+
+my $dbh = DBConnect::connectr();
+
+my $pid = $q->param('pid');
+
+my $sth1 = $dbh->prepare(qq {SELECT p.gid, p.title, p.presenter, p.background, p.proposal, p.resources, p.reference, p.discussbegin, p.discussend, p.votebegin, p.voteend, p.presens, p.presensval, p.consens, p.consensval, ph.phase, p.distnum, p.result, p.moddate, g.fname, g.lname from proposals p, greens g, phases ph where p.gid = g.gid AND p.phaseid = ph.phaseid AND pid = ?});
+
+$sth1->execute($pid);
+
+my ($gid, $title, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $presensval, $consens, $consensval, $phase, $distnum, $result, $moddate, $fname, $lname) = $sth1->fetchrow_array;
+
+$sth1->finish;
+
+if ($phase eq "Closed") {
+	print "<h3>Proposal Vote Results</h3>";
+	}
+else {
+	print "<h3>Votes So Far</h3>";
+	}
+
+print<<EOF;
+
+<table cellpadding='4'>
+<tr><th>Proposal ID</th><td colspan='2'><b>$pid</b></td></tr>
+<tr><th><b>Proposal</th><td colspan='2'><a href="propdetail?pid=$pid"><b>$title</b></a></td></tr>
+<tr><th>Floor Manager</th><td colspan='2'>$fname $lname</td></tr>
+<tr><th>Phase</th><td colspan='2'>$phase</td></tr>
+<tr><th>Results</th><td colspan='2'>
+EOF
+
+if ($result) {
+	print "<b>$result</b>";
+}
+else {
+	print "<b>Votes Received So Far</b>";
+}
+
+my $cntvr = qq{select count(vote) FROM votes WHERE pid = ?};
+my $votesreceived = $dbh->selectrow_array($cntvr, undef, $pid);
+
+my $cntcv = qq{select count(vote) FROM votes WHERE pid = ? and vote in ('Yes', 'No')};
+my $consensvotes = $dbh->selectrow_array($cntcv, undef, $pid);
+
+my $cntpv = qq{select count(distinct distid) FROM votes WHERE pid = ?};
+my $presensvotes = $dbh->selectrow_array($cntpv, undef, $pid);
+
+print "<table cellpadding='4'>\n";
+
+my ($votesum, $vote);
+
+my $sth2 = $dbh->prepare(qq {select count(vote), vote from votes WHERE pid = ? group by vote ORDER BY vote DESC});
+$sth2->execute($pid);
+$sth2->bind_columns(\($votesum, $vote));
+
+while (my $ref = $sth2->fetch) {
+	my $width = 2 * $votesum;
+	my $progressbar = Conf::progressbar();
+	print "<tr><td align='right'>$vote</td><td align='right'>$votesum</td><td colspan='2'><img src=\"$progressbar\" width=\"$width\" height='12' border='0'>&nbsp;</td></tr>\n";	
+	}
+$sth2->finish;
+
+print "</table>\n<p>$votesreceived Total Votes Received from $presensvotes States/Caucuses</p></td></tr>\n";
+
+if ($result) {
+	print "<tr><th>Presens Quorum</th><td colspan='2'>$presensval - $presens of $distnum Accredited States/Caucuses</td></tr>";
+	#Threshold - consens quorum - is either more than .5 or .6667 of the yes votes plus the no votes
+	$consens = "A Majority" if ($consens == 0.5);
+	print "<tr><th>Consens Quorum</th><td colspan='2'>$consensval - $consens of $consensvotes Yes and No Votes</td></tr>";
+	}
+else {
+	print "<tr><th>Presens Quorum</th><td colspan='2'>$presens</td></tr>";
+	print "<tr><th>Consens Quorum</th><td colspan='2'>$consens</td></tr>";
+}
+
+print "\n</table>\n";
+
+print "<h3>Votes Received</h3>\n";
+print "<table cellpadding='4'>\n<tr><th>Delegation</th><th>Vote</th><th>Voter</th></tr>\n";
+
+my $district;
+my $sth3 = $dbh->prepare(qq {select g.fname, g.lname, v.vote, d.district FROM votes v, greens g, districts d WHERE v.gid = g.gid AND v.distid = d.distid AND v.pid = ? order by d.district, g.lname, g.fname});
+$sth3->execute($pid);
+$sth3->bind_columns(\($fname, $lname, $vote, $district));
+while (my $ref = $sth3->fetch) {
+	print "<tr><td>$district</td><td>$vote</td><td>$fname $lname</td></tr>\n";
+}
+$sth3->finish;
+print "</table>\n";
+
+$dbh->disconnect;
+
+HeadFoot::foot();
+exit();
+}

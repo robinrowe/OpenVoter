@@ -1,0 +1,2 @@
+1 0 * * * /usr/bin/nice LIB/phases
+5 3 * * * /usr/bin/nice LIB/voteend

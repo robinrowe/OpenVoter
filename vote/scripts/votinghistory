@@ -1,0 +1,89 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=0;  # read only - no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session(undef, $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+if (! $guid)
+	{
+	$session->delete();
+	$guid = "";
+	}
+
+start();
+
+sub start {
+
+HeadFoot::head($guid, $page);
+
+my $dbh = DBConnect::connectr();
+
+print<<EOF;
+<h3>Voting History</h3>
+
+<table border cellpadding="4">
+<tr>
+<th>Delegation</th>
+<th>Status</th>
+<th>Name</th>
+<th>Votes</th>
+</tr>
+
+EOF
+
+my ($numvotes, $gid, $fname, $lname, $role, $district, $actstatus, $distid, $lastdist);
+
+my $sth = $dbh->prepare(qq {select count(v.vote), v.gid, g.fname, g.lname, r.role, d.district, gr.actstatus, v.distid FROM votes v, greens g, roles r, districts d, greens_roles gr WHERE v.gid = g.gid AND v.gid = gr.gid AND v.distid = gr.distid AND d.distid = v.distid AND v.roleid = gr.roleid AND v.roleid = r.roleid GROUP BY v.gid, g.fname, g.lname, r.role, d.district, gr.actstatus ORDER BY d.district, gr.actstatus DESC, r.role DESC, g.lname, g.fname});
+$sth->execute();
+$sth->bind_columns(\($numvotes, $gid, $fname, $lname, $role, $district, $actstatus, $distid));
+while (my $ref = $sth->fetch) {
+	$role = "Retired $role" unless ($actstatus == 1);
+	print "<tr><td>";
+	if ($distid == $lastdist)
+		{print "$district";}
+	else
+		{print "<a href='contacts?did=$distid'><b>$district</b></a>";}
+	print "</td><td>$role</td><td>$fname $lname</td><td>$numvotes</td></tr>\n";
+	$lastdist = $distid;
+	}
+$sth->finish;
+
+$dbh->disconnect;
+print "</table>\n";
+
+HeadFoot::foot();
+
+exit();
+}

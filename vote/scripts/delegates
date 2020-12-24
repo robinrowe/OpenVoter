@@ -1,0 +1,139 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+use DBConnect;
+$CGI::POST_MAX=0;  # no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+else
+	{
+	if ($q->param('format'))
+		{tabs();}
+	else
+		{delegates();}
+	}
+
+sub delegates {
+
+my $dbh = DBConnect::connectr();
+
+my $sth = $dbh->prepare(qq {select g.fname, g.lname, g.email, g.add1, g.add2, g.city, g.stateabbr, g.zip, g.phd, g.phe, g.phc, g.phf, c.comm, c.commid,  r.role, d.distid, d.district FROM greens g, greens_roles gr LEFT JOIN districts d ON gr.distid = d.distid, roles r, committees c where g.gid = gr.gid and gr.commid = c.commid and gr.roleid = r.roleid and gr.actstatus = 1 order by d.district, gr.roleid, g.lname, g.fname});
+
+HeadFoot::head($guid, $page);
+
+print<<EOF;
+<h3>Delegates List</h3>
+
+<a href="delegates?format=tab"><b>Tab Delimited Format</b></a><br><br>
+For information on each delegation, click on the delegation.<br><br>
+<table width="100%" border>
+<tr>
+<th>Delegation</th>
+<th>Role</th>
+<th>Name &amp; Email</th>
+<th>Phone</th>
+<th>Address</th>
+</tr>
+EOF
+
+my $lastdist;
+
+$sth->execute();
+$sth->bind_columns(\my($fname, $lname, $email, $add1, $add2, $city, $stateabbr, $zip, $phd, $phe, $phc, $phf, $comm, $cid, $role, $distid, $district));
+while (my $ref1 = $sth->fetch) {
+	print "<tr>\n";
+	$district = "&nbsp;" unless $district;
+	if ($distid == $lastdist)
+		{print "<td>$district</td>\n";}
+	else
+		{print "<td><a href='contacts?did=$distid'><b>$district</b></a></td>\n";}
+	
+	print "<td>";
+	if ($cid == 1)
+		{print "$role<br>";}
+	else
+		{print "$comm $role<br>";}
+	print "</td>\n";
+	print "<td>$fname $lname<br><a href='mailto:$email'>$email</a></td>\n";
+	print "<td>";
+	if ($phd) {print "$phd - Day<br>";}
+	if ($phe) {print "$phe - Eve<br>";}
+	if ($phc) {print "$phc - Cell<br>";}
+	if ($phf) {print "$phf - Fax";}
+	print "&nbsp;</td>\n";
+	print "<td>";
+	if ($add1) {print "$add1<br>";}
+	if ($add2) {print "$add2<br>";}
+	if ($city) {print "$city, $stateabbr $zip";}
+	print "&nbsp;</td>\n";
+	print "</tr>\n";
+	$lastdist = $distid;
+	}
+$sth->finish;
+
+$dbh->disconnect;
+
+print "</table>\n";
+
+HeadFoot::foot();
+
+exit();
+}
+
+sub tabs {
+
+print $q->header("text/plain");
+print "Delegation\tRole\tName\tEmail\tDay Phone\tEve Phone\tCell Phone\tFax\tAddress\tAddress2\tCity\tState\tZip\n";
+
+my $dbh = DBConnect::connectr();
+my $sth = $dbh->prepare(qq {select g.fname, g.lname, g.email, g.add1, g.add2, g.city, g.stateabbr, g.zip, g.phd, g.phe, g.phc, g.phf, r.role, d.district FROM greens g, greens_roles gr LEFT JOIN districts d ON gr.distid = d.distid, roles r where g.gid = gr.gid and gr.commid = 1 and gr.roleid = r.roleid and gr.actstatus = 1 order by d.district, r.role desc, g.lname, g.fname});
+$sth->execute();
+$sth->bind_columns(\my($fname, $lname, $email, $add1, $add2, $city, $stateabbr, $zip, $phd, $phe, $phc, $phf, $role, $district));
+while (my $ref = $sth->fetch) {
+	print "$district\t$role\t$fname\t$lname\t$email\t$phd\t$phe\t$phf\t$phc\t$add1\t$add2\t$city\t$stateabbr\t$zip\n";
+	}
+$sth->finish;
+
+$dbh->disconnect;
+
+exit();
+} 

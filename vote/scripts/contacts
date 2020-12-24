@@ -1,0 +1,239 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use DateFormats;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=0;  # no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if ($q->param('did'))
+	{districts();}
+elsif ($q->param('cid'))
+	{committees();}
+else
+	{choosecontact();}
+
+sub choosecontact {
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select distid, district from districts order by district});
+my $sth2 = $dbh->prepare(qq {select commid, comm from committees where actstatus = 1 and commid > 1 order by comm});
+
+HeadFoot::head($guid, $page);
+
+print "<h3>Select a Delegation</h3>\n";
+
+print "<table cellpadding='4'>\n";
+$sth1->execute();
+$sth1->bind_columns(\my($distid, $district));
+my $i = 1;
+while (my $ref = $sth1->fetch) {
+	if ($i == 1)
+		{print "<tr>";}
+	print "<td><a href=\"contacts?did=$distid\">$district</a></td>";
+	$i++;
+	if ($i == 7) {
+		print "</tr>\n";
+		$i = 1;
+		}
+	}
+$sth1->finish;
+print "</table>\n";
+
+print "<h3>Delegates List</h3>\n";
+
+print "<a href='delegates'>View the Complete Delegates List.</a>\n";
+
+print "<h3>Select a Committee</h3>\n";
+
+print "<table cellpadding='4'>\n";
+$sth2->execute();
+$sth2->bind_columns(\my($commid, $comm));
+$i = 1;
+while (my $ref = $sth2->fetch) {
+	if ($i == 1)
+		{print "<tr>";}
+	print "<td><a href=\"contacts?cid=$commid\">$comm</a></td>";
+	$i++;
+	if ($i == 4) {
+		print "</tr>\n";
+		$i = 1;
+		}
+	}
+$sth2->finish;
+print "</table>\n";
+
+$dbh->disconnect;
+
+HeadFoot::foot();
+exit();
+}
+
+sub committees {
+my $commid = $q->param('cid');
+if ($commid == 1)
+	{choosecontact();}
+else
+	{
+	my $dbh = DBConnect::connectr();
+	my $sql = qq {select comm, webpage, listserv from committees where commid = ? order by comm};
+	my ($comm, $webpage, $listserv) = $dbh->selectrow_array($sql, undef, $commid);
+
+	my $sth = $dbh->prepare(qq {select g.fname, g.lname, gr.distid, d.district, r.role from greens g, districts d, roles r, greens_roles gr where gr.commid = ? and g.gid = gr.gid and gr.actstatus = 1 and gr.roleid = r.roleid and gr.distid = d.distid order by gr.roleid, d.district, g.lname});
+	
+	HeadFoot::head($guid, $page);
+
+	print "<h3>$comm</h3>\n";
+	
+	#See if the user is a Co-Chair of this Committee
+	#If so, place a link to admincom
+	if (DataCheck::valrole($guid, 7, $commid))
+		{
+		print "<a href=\"admincom?commid=$commid\"><b>Modify Committee</b></a><br><br>\n";
+		}
+	
+	print "<table cellpadding='4'>\n";
+	print "<tr><td><b>Webpage:</b></td><td><a href=\"$webpage\"><b>$webpage</b></a></td></tr>\n";
+	if ($guid and $listserv)
+		{print "<tr><td><b>Listserv:</b></td><td><a href=\"$listserv\"><b>$listserv</b></a></td></tr>\n";}
+	print "</table>\n<br>\n";
+
+	print "<table border cellpadding='4'>\n";
+	print "<tr><th>Delegation</th><th>Name</th><th>Role</th></tr>\n";
+	$sth->execute($commid);
+	$sth->bind_columns(\my($fname, $lname, $distid, $district, $role));
+	my $olddistid;
+	while (my $ref = $sth->fetch) {
+		if ($distid == $olddistid)
+			{print "<tr><td>$district</td><td>$fname $lname</td><td>$role</td></tr>\n";}
+		else
+			{print "<tr><td><a href='contacts?did=$distid'>$district</a></td><td>$fname $lname</td><td>$role</td></tr>\n";}
+		$olddistid = $distid;
+		}
+	print "</table>\n";
+	$dbh->disconnect;
+
+	HeadFoot::foot();
+	exit();
+	}
+}
+
+sub districts {
+my $distid = $q->param('did');
+
+my ($disttype, $district, $disttypeid, $voters, $maxvoters, $actstatus, $accreddate, $accdate, $website, $status, $pid, $title, $votecnt, $vote, $dels, $alts, $obs, $commid, $comm);
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select d.district, d.disttypeid, dt.disttype, d.voters, d.maxvoters, d.actstatus, d.accreddate, d.website from districts d, disttypes dt where d.distid = ? and d.disttypeid = dt.disttypeid});
+$sth1->execute($distid);
+($district, $disttypeid, $disttype, $voters, $maxvoters, $actstatus, $accreddate, $website) = $sth1->fetchrow_array;
+$sth1->finish;
+
+if ($accreddate)
+	{$accdate = DateFormats::display($accreddate);}
+if ($actstatus == 1)
+	{$status = "Accredited";}
+else
+	{$status = "Unaffiliated";}
+
+my $cntd = qq {select count(gid) from greens_roles where distid = ? and commid = 1 and roleid = 1 and actstatus = 1};
+my $dels = $dbh->selectrow_array($cntd, undef, $distid);
+my $cnta = qq {select count(gid) from greens_roles where distid = ? and commid = 1 and roleid = 2 and actstatus = 1};
+my $alts = $dbh->selectrow_array($cnta, undef, $distid);
+my $cnto = qq {select count(gid) from greens_roles where distid = ? and commid = 1 and roleid = 3 and actstatus = 1};
+my $obs = $dbh->selectrow_array($cnto, undef, $distid);
+
+my $sth2 = $dbh->prepare(qq {select pid, title from proposals where phaseid = 5 and voteend > ? order by pid desc});
+my $sth3 = $dbh->prepare(qq {select count(vote), vote from votes where pid = ? and distid = ? group by vote order by vote desc});
+
+my $sth4 = $dbh->prepare(qq {select commid, comm from committees where commid > 1 and actstatus = 1 order by comm});
+
+my $cntc = qq {select count(gid) from greens_roles where distid = ? and commid = ? and roleid in (7, 8, 9) and actstatus = 1};
+
+HeadFoot::head($guid, $page);
+
+print "<h3>$district Delegation</h3>\n";
+	
+#See if the user is one of the Accreditation Committee Co-Chairs (roleid 7, commid 2)
+#If so, place a link to admindist
+
+if (DataCheck::valrole($guid, 7, 2))
+	{
+	print "<a href=\"admindist?distid=$distid\"><b>Modify Delegation</b></a><br><br>\n";
+	}
+
+print "<table cellpadding='4'>\n";
+print "<tr><th>Website</th><td><a href=\"$website\"><b>$website</b></a></td></tr>\n";
+print "<tr><th>Status</th><td>$status $disttype</td></tr>\n";
+print "<tr><th>Accreditation Date</th><td>$accdate</td></tr>\n";
+print "<tr><th>Current Delegates</th><td>$dels</td></tr>\n";
+print "<tr><th>Current Alternates</th><td>$alts</td></tr>\n";
+print "<tr><th>Current Observers</th><td>$obs</td></tr>\n";
+print "<tr><th>Currently Allowed Voters</th><td>$voters</td></tr>\n";
+print "<tr><th>Maximum Allowed Voters</th><td>$maxvoters</td></tr>\n";
+print "</table>\n";
+
+print "<h3>Committees</h3>\n";
+
+print "<table cellpadding='4'>\n";
+$sth4->execute();
+$sth4->bind_columns(\($commid, $comm));
+while (my $ref = $sth4->fetch) {
+	my $commems = $dbh->selectrow_array($cntc, undef, $distid, $commid);
+	print "<tr><td><a href='contacts?cid=$commid'>$comm</a></td><td>$commems</td></tr>\n";
+	}
+print "</table>\n";
+
+if ($actstatus == 1) {
+	print "<h3>Voting History Since Accreditation</h3>\n";
+
+	$sth2->execute($accreddate);
+	$sth2->bind_columns(\($pid, $title));
+	while (my $ref = $sth2->fetch) {
+		print "<a href='propdetail?pid=$pid'>$pid - $title</a><br>\n";
+		$sth3->execute($pid, $distid);
+		$sth3->bind_columns(\($votecnt, $vote));
+		while (my $ref3 = $sth3->fetch) {
+			print "&nbsp;&nbsp;&nbsp;$votecnt - $vote<br>\n";
+			}
+		$sth3->finish;
+		}
+	}
+
+$dbh->disconnect;
+
+HeadFoot::foot();
+exit();
+}

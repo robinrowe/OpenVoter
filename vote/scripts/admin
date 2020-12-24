@@ -1,0 +1,119 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use Email;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=0;  # no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message = $q->param('message');
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[45]/) #only admins and sc members have admin priviledges
+	{
+	admin();
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+sub admin {
+
+my ($var, $pid, $title);
+
+HeadFoot::head($guid, $page);
+print $message;
+
+print<<EOF;
+<h3>Voting Page Administration</h3>
+<ul>
+<li><a href="admindelegates"><b>Add/Modify/Delete Delegates</b></a>
+<li><a href="admindistricts"><b>Add/Modify Delegations</b></a>
+<li><a href="admincommittees"><b>Add/Modify Committees</b></a>
+<li><a href="adminprop"><b>Add New Proposal</b></a>
+<li><a href="adminirv"><b>Add New Ranked Choice Vote</b></a>
+</ul>
+<h4>Modify Current Proposals or Ranked Choice Votes</h4>
+<ul>
+EOF
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select p.pid, p.title, "p" from proposals p where p.phaseid < 4 union select i.pid, i.title, "i" from irv i where i.phaseid < 4 order by pid});
+$sth1->execute();
+$sth1->bind_columns(\($pid, $title, $var));
+while (my $ref = $sth1->fetch) {
+	if ($var eq "p")
+		{print "<li><a href=\"adminprop?pid=$pid\"><b>Modify - ID $pid</b></a> - $title";}
+	else
+		{print "<li><a href=\"adminirv?pid=$pid\"><b>Modify - ID $pid</b></a> - $title";}
+	}
+$sth1->finish;
+
+print<<EOF;
+
+</ul>
+<h4>Completed Ranked Choice Votes Pending Certification</h4>
+
+Ranked Choice Vote Administrators must certify the ranked choice vote once voting has ended before results can be announced.<br>
+
+<ul>
+EOF
+
+my $sth2 = $dbh->prepare(qq {select i.pid, i.title from irv i where i.phaseid = 4});
+$sth2->execute();
+$sth2->bind_columns(\($pid, $title));
+while (my $ref = $sth2->fetch) {
+	print "<li><a href=\"certifyirv?pid=$pid\"><b>Certify - ID $pid</b></a> - $title";
+	}
+$sth2->finish;
+
+print "</ul>\n";
+
+$dbh->disconnect;
+
+HeadFoot::foot();
+
+exit();
+}
+

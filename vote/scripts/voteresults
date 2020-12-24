@@ -1,0 +1,91 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if (! $guid)
+	{
+	$session->delete();
+	$guid = "";
+	}
+
+start();
+
+sub start {
+
+HeadFoot::head($guid, $page);
+
+print<<EOF;
+<h3>Past Vote Results</h3>
+
+<table border cellpadding="4" width="95%">
+<tr>
+<th>ID</th>
+<th>Proposal</th>
+<th>Floor Manager</th>
+<th>Result</th>
+<th>Date</th>
+</tr>
+EOF
+
+my $dbh = DBConnect::connectr();
+
+my $sth = $dbh->prepare(qq {select p.pid, p.title, p.voteend, p.result, g.fname, g.lname, "p" as type from proposals p, greens g where p.gid = g.gid and phaseid = 5 union select i.pid, i.title, i.voteend, "See Details" as result, g.fname, g.lname, "i" as type from irv i, greens g where i.gid = g.gid and phaseid = 5 order by pid desc}); #phase 5 = closed
+$sth->execute();
+$sth->bind_columns(\my($pid, $title, $voteend, $result, $fname, $lname, $type));
+while (my $ref = $sth->fetch) {
+	print "<tr><td align='right'><b>$pid</b></td>\n<td>";
+	if ($type eq "p")
+		{print "<a href='propdetail?pid=$pid'>";}
+	else
+		{print "<a href='irvdetail?pid=$pid'>";}
+	print "$title</a></td><td>$fname $lname</td><td>";
+	if ($type eq "p")
+		{print "<a href='propresult?pid=$pid'>";}
+	else
+		{print "<a href='irvresult?pid=$pid'>";}
+	print "$result</a></td><td>$voteend</td></tr>\n";
+	}
+$sth->finish;
+
+$dbh->disconnect;
+print "</table>\n";
+
+HeadFoot::foot();
+
+exit();
+}

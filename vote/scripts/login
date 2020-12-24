@@ -1,0 +1,261 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use Email;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 2;  # max 2K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+#if user name and password match a record in the login table
+#generate a session id that contains the user id and permid
+#set a cookie with the session id
+#read the cookie on pages that require user input
+#check for permissions for that user. If inadequate, display a message.
+#if user name and password do not match, display an error.
+#a password reminder form sends the user name and password in email - no more than one per day to the same address.
+#users may request a login by writing to the admin.
+
+my $q = new CGI;
+my ($message1, $message2);
+my $temp = qw(TEMP);
+my $page = $q->param('page');
+my $pid = $q->param('pid');
+
+if ($q->param('login') and $q->param('user') and $q->param('pw'))
+	{
+	login();
+	}
+elsif ($q->param('remind'))
+	{
+	remind();
+	}
+else	
+	{
+	loginform();
+	}
+
+sub loginform {
+my ($username);
+
+HeadFoot::head(0, "login");
+
+print "<ul>\n";
+print $q->start_form();
+print "<h3>Login</h3>";
+print "$message1";
+
+print "<table width=\"30%\" cols=2>\n<tr><td><b>Login:</b></td><td>\n";
+
+print $q->textfield(-name => 'user',
+	-size => 20,
+	-maxlength => 20);
+
+print "</td></tr>\n<tr><td><b>Password:</b></td><td>";
+
+print $q->password_field(-name => "pw",
+	-size => 20,
+	-maxlength => 15);
+
+print "</td></tr>\n<tr><td>&nbsp;</td>\n<td>\n<p>\n";
+
+print $q->hidden('page', "$page");
+print $q->hidden('pid', "$pid");
+print $q->submit('login', "Login");
+
+print "</td></tr>\n</table>\n";
+
+print $q->end_form();
+
+print $q->start_form();
+
+print<<EOF;
+<h3>Password Reminder</h3>
+
+Have your password emailed to you. $message2
+<br><br>
+
+<table width="30%" cols=2>
+<tr><td><b>Login Name:</b></td>
+<td>
+EOF
+
+print $q->textfield(-name => "username",
+	-size => 20,
+	-maxlength => 20,
+	-default => $username);
+
+print "</td></tr>\n<tr><td>&nbsp;</td>\n<td>\n<br><br>\n";
+
+print $q->hidden('page', "$page");
+print $q->hidden('pid', "$pid");
+print $q->submit('remind', "Remind Me");
+
+print "</td></tr>\n</table>\n";
+
+print $q->end_form();
+
+my $group = Conf::group();
+my $admin = Conf::admin();
+my $delinfo = Conf::delinfo();
+
+print<<EOF;
+<h3>Get a Login</h3>
+
+New Delegates should <a href="$delinfo"><b>follow these procedures</b></a> to get a login to the Voting System and to subscribe to the $group listservs.
+EOF
+
+print "</ul>\n";
+
+HeadFoot::foot();
+exit();
+}
+
+sub login {
+
+my $user = $q->param('user');
+my $pw = $q->param('pw');
+
+my $dbh = DBConnect::connectw();
+
+my $sql = qq {select gid from signons where signon = ? and pw = ?};
+my $gid = $dbh->selectrow_array($sql, undef, $user, $pw);
+
+if ($gid)
+	{
+	my $sth1 = $dbh->prepare(qq {update signons set lastlogin = now() where gid = ?});
+	$sth1->execute($gid);
+	
+	my $session = new CGI::Session("driver:File", $q, {Directory=>$temp});
+	$session->param("guid", $gid);
+	
+	my $sth2 = $dbh->prepare(qq {select fname, lname from greens where gid = ?});
+	$sth2->execute($gid);
+	my ($fname, $lname) = $sth2->fetchrow_array;
+	$session->param("name", "$fname $lname");
+	$sth2->finish;
+	
+	my ($roles, $comms, $dists);
+	my $sth3 = $dbh->prepare(qq {select distinct roleid, commid, distid from greens_roles where gid = ? and actstatus = 1 order by roleid});
+	$sth3->execute($gid);
+	while (my $ref = $sth3->fetch) {
+		$roles .= ",$$ref[0]";
+		$comms .= ",$$ref[1]";
+		$dists .= ",$$ref[2]";
+		}
+	$sth3->finish;
+	$roles =~ s/^,//;
+	$comms =~ s/^,//;
+	$dists =~ s/^,//;
+	$session->param("roles", $roles);
+	$session->param("comms", $comms);
+	$session->param("dists", $dists);
+	$session->expire('+1h');
+	
+	my $cookiename = Conf::cookiename();
+	my $cookie = $q->cookie($cookiename => $session->id);
+	if ($pid and $page)
+		{
+		print $q->redirect (-location => "$page?pid=$pid", -cookie => $cookie);
+		exit();
+		}
+	elsif ($page) 
+		{
+		print $q->redirect (-location => "$page", -cookie => $cookie);
+		exit();
+		}
+	else
+		{
+		print $q->redirect (-location => "index", -cookie => $cookie);
+		exit();
+		}
+	}
+else
+	{
+	$message1 = "<font color='red'>Invalid user name or password - please try again!</font><br><br>\n";
+	loginform();
+	}
+$dbh->disconnect;
+}
+
+sub remind {
+my ($pw, $email, $sentreminder);
+my $username = $q->param('username');
+my $dbh = DBConnect::connectw();
+my $sth1 = $dbh->prepare(qq {select s.pw, g.email, s.sentreminder from signons s, greens g where s.gid = g.gid and s.signon = ?});
+$sth1->execute($username);
+($pw, $email, $sentreminder) = $sth1->fetchrow_array;
+$sth1->finish;
+
+if ($sentreminder > 3)
+	{
+	$message2 = "<br><font color='red'>Your password has already been sent to you. Please check your email or contact the Voting Admin if your email address has changed.</font><br>\n";
+	loginform();
+	}
+else
+	{
+	if (DataCheck::email($email, 70) == 1)
+		{
+		my $sth2 = $dbh->prepare(qq {update signons set sentreminder = sentreminder + 1 where signon = ?});
+		$sth2->execute($username);
+		$message2 = "<br><font color='red'>Your password has been sent to the email address we have on file for you.</font><br>\n";
+		my $acronym = Conf::acronym();
+		my $admin = Conf::admin();
+		my $subject = "Your $acronym Voting System Login\n\n";
+		my $scripturl = Conf::scripturl();
+my $msg = <<EOM;
+
+Dear $acronym Voting System User,
+
+Here is your account information for the $acronym voting website.
+If you have any questions or difficulties, you can reply to this email
+to contact our voting admins at $admin,
+
+Your $acronym password is $pw
+
+To view final results, view proposals under discussion or currently
+voting, to vote on a proposal or to view contact information for all
+delegates, go to: 
+
+	$scripturl/index
+	
+Thank you and have a wonderful day!
+--The $acronym Voting Admin
+EOM
+
+		Email::email($email, $subject, $msg);
+		$q->delete('username');
+		loginform();
+		}
+	else
+		{
+		$message2 = "<br><font color='red'>Sorry - we don't have a current email address on file for you.</font><br>\n";
+		$q->delete('username');
+		loginform();
+		}
+	}
+$dbh->disconnect;
+}

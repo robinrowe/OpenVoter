@@ -1,0 +1,883 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use Email;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $gupermid = $session->param('gupermid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[45]/) #only admins and sc members can modify delegates
+	{
+	if (($q->param('adddel')) and (! $q->param('gid'))) {
+		adddel();
+		}
+	elsif ($q->param('moddel')) {
+		moddel();
+		}
+	elsif ($q->param('deldel')) {
+		deldel();
+		}
+	elsif ($q->param('remind')) {
+		remind();
+		}
+	elsif ($q->param('cancel')) {
+		print $q->redirect (-location => "admindelegates");
+		exit();
+		}
+	else {
+		delform();
+		}
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+
+sub delform {
+
+my $gid = $q->param('gid');
+
+my ($fname, $lname, $email, $phd, $phe, $phf, $phc, $add1, $add2, $city, $stateabbr, $zip,  $username, $password, @statelist, %statelist, @distlist, %distlist, @rolelist, %rolelist, @commlist, %commlist);
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select abbr, state from states order by state});
+$sth1->execute();
+$sth1->bind_columns(\my ($abbr, $state));
+while (my $ref = $sth1->fetch) {
+	$statelist{$abbr} = "$state";
+	}
+$sth1->finish;
+
+$statelist{""} = "";
+
+my @tempstatelist = sort {$statelist{$a} cmp $statelist{$b}} keys %statelist;
+
+foreach $_(@tempstatelist)
+	{
+	push(@statelist, $_);
+	}
+
+my $sth2 = $dbh->prepare(qq {select distid, district from districts order by district});
+$sth2->execute();
+$sth2->bind_columns(\my ($distid, $district));
+while (my $ref = $sth2->fetch) {
+	$distlist{$distid} = "$district";
+	}
+$sth2->finish;
+
+$distlist{""} = "";
+
+my @tempdistlist = sort {$distlist{$a} cmp $distlist{$b}} keys %distlist;
+
+foreach $_(@tempdistlist)
+	{
+	push(@distlist, $_);
+	}
+
+
+push (@rolelist, 0);
+$rolelist{0} = "";
+
+my $sth3 = $dbh->prepare(qq {select r.roleid, r.role from roles r order by r.roleid}); 
+$sth3->execute();
+$sth3->bind_columns(\my($rid, $role));
+while (my $ref = $sth3->fetch) {
+	$rolelist{$rid} = "$role";
+	push (@rolelist, $rid);
+	}
+$sth3->finish;
+
+my $sth4 = $dbh->prepare(qq {select c.commid, c.comm from committees c where c.commid > 1 order by c.comm}); 
+$sth4->execute();
+$sth4->bind_columns(\my($cid, $comm));
+while (my $ref = $sth4->fetch) {
+	$commlist{$cid} = "$comm";
+	}
+$sth4->finish;
+
+my @tempcommlist = sort {$commlist{$a} cmp $commlist{$b}} keys %commlist;
+
+push (@commlist, 0);
+push (@commlist, 1);
+
+$commlist{0} = "";
+
+my $sql1 = $dbh->prepare(qq {select c.comm from committees c where c.commid = 1});
+$commlist{1} = $dbh->selectrow_array($sql1);
+
+foreach $_(@tempcommlist)  {
+	push(@commlist, $_);
+	}
+
+if ($q->param('added') eq "ok")
+	{$message = "New Delegate Added";}
+
+HeadFoot::head($guid, $page);
+print $message;
+print $q->start_form();
+
+if ($gid)
+	{
+	my $sth5 = $dbh->prepare(qq {select g.fname, g.lname, g.email, g.phd, g.phe, g.phf, g.phc, g.add1, g.add2, g.city, g.stateabbr, g.zip, s.signon, s.pw FROM greens g left join signons s on g.gid = s.gid where g.gid = ?});
+	$sth5->execute($gid);
+	($fname, $lname, $email, $phd, $phe, $phf, $phc, $add1, $add2, $city, $stateabbr, $zip,  $username, $password) = $sth5->fetchrow_array;
+	$sth5->finish;
+	print "<h3>Modify Delegate</h3>\n";
+	}
+else 
+	{
+	print "<h3>Add New Delegate</h3>\n";
+	}
+
+print "<table cellpadding='4'>\n";
+
+print "<tr><th>First Name</th><td>";
+print $q->textfield(-name => 'fname',
+	-size => 25,
+	-maxlength => 20,
+	-default => $fname);
+print "</td></tr>\n";
+
+print "<tr><th>Last Name</th><td>";
+print $q->textfield(-name => 'lname',
+	-size => 25,
+	-maxlength => 20,
+	-default => $lname);
+print "</td></tr>\n";
+
+print "<tr><th>Email</th><td>";
+print $q->textfield(-name => 'email',
+	-size => 50,
+	-maxlength => 80,
+	-default => $email);
+print "</td></tr>\n";
+
+print "<tr><th>Day Phone</th><td>";
+print $q->textfield(-name => 'phd',
+	-size => 25,
+	-maxlength => 20,
+	-default => $phd);
+print "</td></tr>\n";
+
+print "<tr><th>Evening Phone</th></td><td>";
+print $q->textfield(-name => 'phe',
+	-size => 25,
+	-maxlength => 20,
+	-default => $phe);
+print "</td></tr>\n";
+
+print "<tr><th>Cell Phone</th><td>";
+print $q->textfield(-name => 'phc',
+	-size => 25,
+	-maxlength => 20,
+	-default => $phc);
+print "</td></tr>\n";
+
+print "<tr><th>Fax</th><td>";
+print $q->textfield(-name => 'phf',
+	-size => 25,
+	-maxlength => 20,
+	-default => $phf);
+print "</td></tr>\n";
+
+print "<tr><th>Address</th><td>";
+print $q->textfield(-name => 'add1',
+	-size => 25,
+	-maxlength => 25,
+	-default => $add1);
+print "\n<br>\n";
+print $q->textfield(-name => 'add2',
+	-size => 25,
+	-maxlength => 20,
+	-default => $add2);
+print "</td></tr>\n";
+
+print "<tr><th>City</th><td>";
+print $q->textfield(-name => 'city',
+	-size => 25,
+	-maxlength => 25,
+	-default => $city);
+print "</td></tr>\n";
+
+print "<tr><th>State</th><td>";
+print $q->popup_menu(-name => 'state',
+	-values => \@statelist,
+	-labels => \%statelist,
+	-default => $stateabbr);
+print "</td></tr>\n";
+
+print "<tr><th>Zip</th><td>";
+print $q->textfield(-name => 'zip',
+	-size => 10,
+	-maxlength => 10,
+	-default => $zip);
+print "</td></tr>\n";
+
+print "<tr><th>Username</th><td>";
+if ($username)
+	{print "$username\n";}
+else 
+	{
+	print $q->textfield(-name => 'username',
+		-size => 25,
+		-maxlength => 20);
+	}
+print "</td></tr>\n";
+
+if ($password)
+	{print "<tr><th>New Password</th><td>";}
+else
+	{print "<tr><th>Password</th><td>";}
+print $q->password_field(-name => 'password',
+	-size => 25,
+	-maxlength => 20);
+print "</td></tr>\n";
+
+print "</table>\n";
+
+print "<br><br>\n";
+
+print "<table cellpadding='4'>\n";
+print "<tr><th>Committee</th><th>Delegation</th><th>Role</th><th>Status</th><td>\n";
+
+if ($gid)
+	{
+	my $sth6 = $dbh->prepare(qq {select gr.commid, gr.roleid, gr.distid, gr.actstatus, c.comm, r.role, d.district from greens_roles gr left join districts d on gr.distid = d.distid, committees c, roles r  where gr.commid = c.commid and gr.gid = ? and gr.roleid = r.roleid order by gr.actstatus desc, d.district, r.role});
+	$sth6->execute($gid);
+	$sth6->bind_columns(\my($cid, $rid, $did, $status, $comm, $role, $district));
+	while (my $ref = $sth6->fetch)
+		{
+		my $statparm = "cid$cid" . "rid$rid" . "did$did";
+		print "<tr><td>$comm</td><td>$district</td>\n<td>$role</td>\n<td>";
+
+		print $q->radio_group (
+			-name  => "$statparm",
+			-values => [1, 0],
+			-default => "$status",
+			-labels => {1 => "Active", 0 => "Retired"});
+		}
+	$sth6->finish;
+
+	print "</td></tr>\n";
+	}
+	
+print "<tr><td>\n";
+print $q->popup_menu(-name => 'newcid',
+	-values => \@commlist,
+	-labels => \%commlist);
+
+print "\n</td><td>\n";
+print $q->popup_menu(-name => 'newdid',
+	-values => \@distlist,
+	-labels => \%distlist);
+
+print "\n</td><td>\n";
+print $q->popup_menu(-name => 'newrid',
+	-values => \@rolelist,
+	-labels => \%rolelist);
+
+print "</td>\n<td>&nbsp;</td></tr>\n<tr><td>&nbsp;</td><td>\n";
+
+print "</table>\n";
+
+if ($gid)
+	{
+	print $q->hidden('gid', "$gid");
+	print "\n&nbsp;&nbsp;&nbsp;";
+	print $q->submit('moddel', 'Modify');
+	print "\n&nbsp;&nbsp;&nbsp;";
+	print $q->submit('deldel', 'Delete');
+	print "\n&nbsp;&nbsp;&nbsp;";
+	print $q->submit('remind', 'Reminder');
+	}
+else
+	{
+	print "&nbsp;&nbsp;&nbsp;";
+	print $q->submit('adddel', '  Add  ');
+	}
+
+print "\n&nbsp;&nbsp;&nbsp;\n";
+print $q->submit('cancel', 'Cancel');
+	
+print "\n\n";
+
+print $q->end_form();
+
+$dbh->disconnect;
+
+HeadFoot::foot();
+exit();
+}
+
+sub adddel{
+#Check the data:
+$message = "";
+my ($error, $username, $password, $fname, $lname, $email, $phd, $phe, $phc, $phf, $commid, $distid, $roleid);
+
+$fname = DataCheck::name($q->param('fname'), 20);
+unless ($fname)
+	{
+	$message .= "First Name required. ";
+	$error = 1;
+	}
+
+$lname = DataCheck::name($q->param('lname'), 20);
+unless ($lname)
+	{
+	$message .= "Last Name required. ";
+	$error = 1;
+	}
+
+if (DataCheck::email($q->param('email'), 80)) 
+	{$email = $q->param('email');}
+else
+	{
+	$message .= "Email required. ";
+	$error = 1;
+	}
+if (DataCheck::phone($q->param('phd'), 20)) 
+	{$phd = $q->param('phd');}
+if (DataCheck::phone($q->param('phe'), 20)) 
+	{$phe = $q->param('phe');}
+if (DataCheck::phone($q->param('phc'), 20)) 
+	{$phc = $q->param('phc');}
+if (DataCheck::phone($q->param('phf'), 20)) 
+	{$phf = $q->param('phf');}
+my $add1 = DataCheck::alphanumext($q->param('add1'));
+my $add2 = DataCheck::alphanumext($q->param('add2'));
+my $city = DataCheck::name($q->param('city'));
+my $state = DataCheck::states($q->param('state'));
+my $zip = DataCheck::zip($q->param('zip'));
+
+if (DataCheck::commid($q->param('newcid')))
+	{$commid = $q->param('newcid');}
+else
+	{
+	$message .= "Please select a committee. ";
+	$error = 1;
+	}
+
+if (DataCheck::role($q->param('newrid')))
+	{$roleid = $q->param('newrid');}
+else
+	{
+	$message .= "Please select a role. ";
+	$error = 1;
+	}
+
+if (DataCheck::distid($q->param('newdid')))
+	{$distid = $q->param('newdid');}
+elsif ($roleid == 4 or $roleid == 5 or $roleid == 6)	#Steering Committee members, staff and admins don't need a district.
+	{$distid = 0;}
+else
+	{
+	$message .= "Please select a delegation. ";
+	$error = 1;
+	}
+
+if ($roleid == 1)
+	{
+	unless (DataCheck::maxdels($distid)) #okay to add more delegates unless they are maxed out.
+		{
+		$message .= "This delegation already has its maximum number of delegates. Please retire another delegate first. ";
+		$error = 1;
+		}
+	}
+
+unless ($roleid == 3)	#Observers don't need and shouldn't have logins. Everyone else does.
+	{
+	if (DataCheck::loginname($q->param('username')))
+		{
+		$message .= "That Username is already in use - please enter another Username. ";
+		$error = 1;
+		}
+	else
+		{
+		$username = DataCheck::alphanum($q->param('username'));
+		unless ($username)
+			{
+			$message .= "User Name required. ";
+			$error = 1;
+			}
+		}
+	$password = DataCheck::pw($q->param('password'));
+	unless ($password)
+		{
+		$message .= "Password required. ";
+		$error = 1;
+		}
+	}
+
+unless ($error) {
+	my $gid;
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		my $sql1 = qq {select greenid from greenid};
+		$gid = $dbh->selectrow_array($sql1);
+		my $sth1 = $dbh->prepare(qq {insert into greens (gid, fname, lname, add1, add2, city, stateabbr, zip, email, phd, phe, phc, phf) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)});
+		$sth1->execute($gid, $fname, $lname, $add1, $add2, $city, $state, $zip, $email, $phd, $phe, $phc, $phf);
+		unless ($roleid == 3) #observers don't get logins
+			{
+			my $sth2 = $dbh->prepare(qq {insert into signons (gid, signon, pw) VALUES(?, ?, ?)});
+			$sth2->execute($gid, $username, $password);
+			}
+		my $sth3 = $dbh->prepare(qq {insert into greens_roles (gid, commid, roleid, distid, actstatus) VALUES(?, ?, ?, ?, 1)});
+		$sth3->execute($gid, $commid, $roleid, $distid);
+		my $sth4 = $dbh->prepare(qq {update greenid set greenid = ?});
+		my $newgid = $gid + 1;
+		$sth4->execute($newgid);
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The new user was not entered due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		delform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		$message = "$fname $lname has been added. Once you have finished with all changes, click on 'Cancel.' ";
+		print $q->redirect (-location => "admindel?gid=$gid&added=ok");
+		exit();
+		}
+	}
+else {
+	$message = "<font color='red'>$message</font><br>\n";
+	$q->param(fname => $fname);
+	$q->param(lname => $lname);
+	$q->param(username => $username);
+	$q->param(password => $password);
+	$q->param(add1 => $add1);
+	$q->param(add2 => $add2);
+	$q->param(city => $city);
+	$q->param(state => $state);
+	$q->param(zip => $zip);
+	delform();
+	}
+}
+
+sub moddel {
+#Check the data:
+$message = "";
+my $error = 0;
+my ($gid, $username, $password, $fname, $lname, $email, $add1, $add2, $city, $state, $zip, $phd, $phe, $phc, $phf, $commid, $distid, $roleid);
+
+if (DataCheck::gid($q->param('gid')))
+	{$gid = $q->param('gid');}
+else
+	{
+	$message .= "Invalid ID. ";
+	$error = 1;
+	}
+
+$fname = DataCheck::name($q->param('fname'), 20);
+unless ($fname)
+	{
+	$message .= "First Name required. ";
+	$error = 1;
+	}
+
+$lname = DataCheck::name($q->param('lname'), 20);
+unless ($lname)
+	{
+	$message .= "Last Name required. ";
+	$error = 1;
+	}
+
+if (DataCheck::email($q->param('email'), 80)) 
+	{$email = $q->param('email');}
+else
+	{
+	$message .= "Email required. ";
+	$error = 1;
+	}
+
+if (DataCheck::phone($q->param('phd'), 20)) 
+	{$phd = $q->param('phd');}
+if (DataCheck::phone($q->param('phe'), 20)) 
+	{$phe = $q->param('phe');}
+if (DataCheck::phone($q->param('phc'), 20)) 
+	{$phc = $q->param('phc');}
+if (DataCheck::phone($q->param('phf'), 20)) 
+	{$phf = $q->param('phf');}
+
+$add1 = DataCheck::alphanumext($q->param('add1'));
+$add2 = DataCheck::alphanumext($q->param('add2'));
+$city = DataCheck::name($q->param('city'));
+$state = DataCheck::states($q->param('state'));
+$zip = DataCheck::zip($q->param('zip'));
+
+#See if the admin added new roles for this user:
+
+if (DataCheck::commid($q->param('newcid')))
+	{$commid = $q->param('newcid');}
+
+if (DataCheck::role($q->param('newrid')))
+	{$roleid = $q->param('newrid');}
+
+if (DataCheck::distid($q->param('newdid')))
+	{$distid = $q->param('newdid');}
+
+#Do some checking for roles that need delegations. Make sure that if there's a role, there's a committee.
+#Make sure that if there's a distid there's also a role and a committee. Ensure that delegations don't get too many delegates.
+#If there's a committee, make sure there's a role. Make sure there's a delegation unless the role is Steering Committee, staff or admin.
+
+if ($roleid or $distid or $commid)
+	{
+	unless ($roleid)
+		{
+		$message .= "Role required. ";
+		$error = 1;
+		}
+	unless ($commid)	
+		{
+		$message .= "Committee required. ";
+		$error = 1;
+		}
+	if ($roleid =~ /[456]/)	#Steering Committee members, staff and admins don't need a district.
+		{$distid = 0;}
+	else 
+		{
+		unless ($distid)
+			{
+			$message .= "Delegation required. ";
+			$error = 1;
+			}
+		}
+	if ($roleid == 1 and $distid)
+		{
+		unless (DataCheck::maxdels($distid)) #okay to add more delegates unless they are maxed out.
+			{
+			$message .= "This delegation already has its maximum number of delegates. Please retire another delegate first. ";
+			$error = 1;
+			}
+		}
+	}
+
+if (DataCheck::delexists($gid, $commid, $roleid, $distid))
+	{
+	$message .= "That delegate already has that role for that district and committee. Please just change their status to active. ";
+	$error = 1;
+	}
+
+#Figure out which users need a login:
+my (@actroles, $needlogin, $loginokay, $dellogin);
+
+if ($roleid)
+	{push (@actroles, $roleid);}
+
+#Also, be sure that no delegation gets more than their allowed number of delegates.
+my @maxdels;
+
+my $dbh = DBConnect::connectr();
+my $sth = $dbh->prepare(qq {select commid, roleid, distid, actstatus from greens_roles where gid = ?});
+$sth->execute($gid);
+$sth->bind_columns(\my($testcid, $testrid, $testdid, $actstatus));
+while (my $ref = $sth->fetch)
+	{
+	my $statparm = "cid$testcid" . "rid$testrid" . "did$testdid";
+	if ($q->param("$statparm") == 1)
+		{
+		push (@actroles, $testrid);
+		if ($testrid == 1 and ! $actstatus)	#Get the users who are changing from retired delete to active delegate
+			{
+			push (@maxdels, $testdid);
+			}
+		}
+	}
+$sth->finish;
+
+my $sql = qq {select pw from signons where gid = ?};
+my $pw = $dbh->selectrow_array($sql, undef, $gid);
+
+$dbh->disconnect;
+
+foreach $_(@maxdels)
+	{
+	unless (DataCheck::maxdels($_)) #okay to add more delegates unless they are maxed out.
+		{
+		$message .= "This delegation already has its maximum number of delegates. Please retire another delegate first. ";
+		$error = 1;
+		}
+	}
+
+my $actrole = 0;
+foreach $_(@actroles)	#Look in @actroles to see if it matches: 1, 2, 4, 5, 6, 7, 8, 9 (everything but 3)
+	{
+	if ($_ = /[12456789]/)
+		{$actrole = 1;}
+	}
+
+#Test to see if the user doesn't have a login and needs one. If they do, require username and password parameters in the delform sub.
+
+if (DataCheck::userid($gid) == 0)	#They don't have a login
+	{
+	if ($actrole)	#They need a login.
+		{
+		$needlogin = 1;
+		if (DataCheck::loginname($q->param('username')))
+			{
+			$message .= "That Username is already in use - please enter another Username. ";
+			$error = 1;
+			}
+		else
+			{
+			$username = DataCheck::alphanum($q->param('username'));
+			unless ($username)
+				{
+				$message .= "User Name required. ";
+				$error = 1;
+				}
+			}
+		$password = DataCheck::pw($q->param('password'));
+		unless ($password)
+			{
+			$message .= "Password required. ";
+			$error = 1;
+			}
+		}
+	}
+else					#They have a login
+	{
+	if ($actrole)	#They need a login.
+		{
+		$loginokay = 1;
+		if ($q->param('password'))
+			{$password = $q->param('password');}
+		else
+			{$password = $pw;}
+		unless ($password)
+			{
+			$message .= "Password required. ";
+			$error = 1;
+			}
+		}
+	else	#They don't need a login
+		{
+		$dellogin = 1; #Tell the update routine below to delete their login
+		}
+	}
+
+if ($error)
+	{
+	$message = "<font color='red'>$message</font><br>\n";
+	$q->param(fname => $fname);
+	$q->param(lname => $lname);
+	$q->param(password => $password);
+	$q->param(add1 => $add1);
+	$q->param(add2 => $add2);
+	$q->param(city => $city);
+	$q->param(state => $state);
+	$q->param(zip => $zip);
+	delform();
+	}
+else
+	{
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		my $sth1 = $dbh->prepare(qq {update greens set fname = ?, lname = ?, add1 = ?, add2 = ?, city = ?, stateabbr = ?, zip = ?, email = ?, phd = ?, phe = ?, phc = ?, phf = ? where gid = ?});
+		$sth1->execute($fname, $lname, $add1, $add2, $city, $state, $zip, $email, $phd, $phe, $phc, $phf, $gid);
+		
+		if  ($needlogin == 1) # the user needs a login
+			{
+			my $sth2 = $dbh->prepare(qq {insert into signons (gid, signon, pw) VALUES(?, ?, ?)});
+			$sth2->execute($gid, $username, $password);
+			}
+		elsif ($dellogin == 1) # the user no longer needs a login
+			{
+			my $sth3 = $dbh->prepare(qq {delete from signons where gid = ?});
+			$sth3->execute($gid);
+			}
+		elsif ($loginokay == 1)
+			{
+			my $sth4 = $dbh->prepare(qq {update signons set pw = ?, sentreminder = 0 where gid = ?});
+			$sth4->execute($password, $gid);
+			}
+		
+		my $sth7 = $dbh->prepare(qq {update greens_roles set actstatus = 1 where gid = ? and commid = ? and roleid = ? and distid = ?});
+		my $sth8 = $dbh->prepare(qq {update greens_roles set actstatus = 0 where gid = ? and commid = ? and roleid = ? and distid = ?});
+		
+		my $sth9 = $dbh->prepare(qq {select commid, roleid, distid from greens_roles where gid = ?});
+		$sth9->execute($gid);
+		$sth9->bind_columns(\my($oldcid, $oldrid, $olddid));
+		while (my $ref9 = $sth9->fetch)
+			{
+			my $statparm = "cid$oldcid" . "rid$oldrid" . "did$olddid";
+			if ($q->param("$statparm") == 1)
+				{$sth7->execute($gid, $oldcid, $oldrid, $olddid);}
+			else
+				{$sth8->execute($gid, $oldcid, $oldrid, $olddid);}
+			}
+		$sth9->finish;
+		
+		if ($commid and $roleid)
+			{
+			if ($distid)
+				{
+				my $sth5 = $dbh->prepare(qq {insert into greens_roles (gid, commid, roleid, distid, actstatus) VALUES(?, ?, ?, ?, 1)});
+				$sth5->execute($gid, $commid, $roleid, $distid);
+				}
+			else
+				{
+				my $sth6 = $dbh->prepare(qq {insert into greens_roles (gid, commid, roleid, distid, actstatus) VALUES(?, ?, ?, 0, 1)});
+				$sth6->execute($gid, $commid, $roleid);
+				}
+			}
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The user was not updated due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		delform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		$message = "$fname $lname has been modified. Once you have finished with all changes, click on 'Cancel.'\n";
+		delform();
+		}
+	}
+}
+
+sub remind {
+$message = "";
+my $gid;
+
+if (DataCheck::gid($q->param('gid')))
+	{$gid = $q->param('gid');}
+
+my $dbh = DBConnect::connectr();
+my $sql = qq {select g.email, s.signon, s.pw FROM greens g left join signons s on g.gid = s.gid where g.gid = ?};
+my ($email, $signon, $pw) = $dbh->selectrow_array($sql, undef, $gid);
+$dbh->disconnect;
+
+if (DataCheck::email($email, 70) == 1)
+	{
+	my $acronym = Conf::acronym();
+	my $admin = Conf::admin();
+	my $subject = "Your $acronym Voting System Login\n\n";
+	my $scripturl = Conf::scripturl();
+my $msg = <<EOM;
+
+Dear $acronym Voting System User,
+
+Here is your account information for the $acronym voting website.
+If you have any questions or difficulties, please contact our 
+voting admins at $admin,
+
+Your login is $signon
+Your password is $pw
+
+To access the system, go to: 
+
+	$scripturl/index
+
+Do not share your login name or password with anyone. And please
+remember to logout once you have finished using the system.
+
+Thank you and have a wonderful day!
+--The $acronym Voting Admin
+EOM
+
+	Email::email($email, $subject, $msg);
+	$message = "Reminder email has been sent. \n";
+	delform();
+	}
+else
+	{
+	$message = "Email address required. \n";
+	delform();
+	}
+}
+
+sub deldel {
+#Check the data:
+$message = "";
+my $gid;
+
+if (DataCheck::gid($q->param('gid')))
+	{
+	$gid = $q->param('gid');
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		my $sth1 = $dbh->prepare(qq {update greens_roles set actstatus = 0 where gid = ?});
+		my $sth2 = $dbh->prepare(qq {delete from signons where gid = ?});
+		$sth1->execute($gid);
+		$sth2->execute($gid);
+		$dbh->commit;
+		};
+	if ($@)
+		{
+		my $admin = Conf::admin();
+		$message = "The user was not deleted due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		delform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		print $q->redirect (-location => "admindelegates");
+		exit();
+		}
+	}
+else
+	{
+	$message .= "Invalid ID. ";
+	delform();
+	}
+}

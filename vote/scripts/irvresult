@@ -1,0 +1,267 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=0;  # no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie($cookiename);
+my $temp = qw(TEMP);
+my $session = new CGI::Session(undef, $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if (! $guid)
+	{
+	$session->delete();
+	$guid = "";
+	}
+
+start();
+
+sub start {
+
+HeadFoot::head($guid, $page);
+
+my $dbh = DBConnect::connectr();
+
+my $pid = $q->param('pid');
+
+my $sth1 = $dbh->prepare(qq {SELECT i.gid, i.irvtype, i.title, i.numseats, i.discussbegin, i.discussend, i.votebegin, i.voteend, i.presens, i.presensval, ph.phase, i.distnum, i.moddate, g.fname, g.lname from irv i, greens g, phases ph where i.gid = g.gid AND i.phaseid = ph.phaseid AND i.pid = ?});
+
+$sth1->execute($pid);
+
+my ($gid, $irvtype, $title, $numseats, $discussbegin, $discussend, $votebegin, $voteend, $presens, $presensval, $phase, $distnum, $moddate, $fname, $lname) = $sth1->fetchrow_array;
+
+$sth1->finish;
+
+if ($phase eq "Closed") {
+	print "<h3>Ranked Choice Vote Results</h3>";
+	}
+else {
+	print "<h3>Votes So Far</h3>";
+	}
+
+my $electiontype;
+
+if ($irvtype == 1)
+	{$electiontype = "Open Ballot";}
+else
+	{$electiontype = "Secret Ballot";}
+
+print<<EOF;
+
+<table cellpadding='4'>
+<tr><th>Ranked Choice Vote ID</th><td colspan='2'><b>$pid</b></td></tr>
+<tr><th>Ranked Choice Vote</th><td colspan='2'><a href="irvdetail?pid=$pid"><b>$title</b></a></td></tr>
+<tr><th>Type</th><td colspan='2'>$electiontype</td></tr>
+<tr><th>Number of Seats</th><td colspan='2'>$numseats</td></tr>
+<tr><th>Ranked Choice Vote Administrator</th><td colspan='2'>$fname $lname</td></tr>
+<tr><th>Phase</th><td colspan='2'>$phase</td></tr>
+<tr><th>Votes</th><td colspan='2'>
+EOF
+
+print "<b>Votes Received</b>";
+
+my $cntvr = qq{select count(vote) FROM votes WHERE pid = ?};
+my $votesreceived = $dbh->selectrow_array($cntvr, undef, $pid);
+
+my $cntpv = qq{select count(distinct distid) FROM votes WHERE pid = ?};
+my $presensvotes = $dbh->selectrow_array($cntpv, undef, $pid);
+
+print "<table cellpadding='4'>\n";
+
+my ($votesum, $vote);
+
+my $sth2 = $dbh->prepare(qq {select count(vote), vote from votes WHERE pid = ? group by vote ORDER BY vote DESC});
+$sth2->execute($pid);
+$sth2->bind_columns(\($votesum, $vote));
+
+while (my $ref = $sth2->fetch) {
+	print "<tr><td align='right'>$vote</td><td align='right'>$votesum</td></tr>\n";	
+	}
+$sth2->finish;
+
+my $repunit = Conf::repunit();
+
+print "</table>\n<p>$votesreceived Total Votes Received from $presensvotes $repunit</p></td></tr>\n";
+
+if ($phase eq "Closed") {
+	print "<tr><th>Presens Quorum</th><td colspan='2'>$presensval - $presens of $distnum Accredited $repunit</td></tr>\n";
+	#Threshold - consens quorum - is either more than .5 or .6667 of the yes votes plus the no votes
+	}
+else {
+	print "<tr><th>Presens Quorum</th><td colspan='2'>$presens</td></tr>\n";
+	}
+
+print "</table>\n";
+
+if ($phase eq "Closed")
+	{
+	print "<h3>Results</h3>"; 
+	my $sth4 = $dbh->prepare(qq {select c.cand, c.result, c.candtype from cands c where c.pid = ? and c.result = "Elected" order by c.candtype, c.cand});
+	$sth4->execute($pid);
+	$sth4->bind_columns(\my($cand, $result, $candtype));
+	print "<table cellpadding='4'>\n<tr><td><b>Candidate</b></td><td><b>Type</b></td><td><b>Result</b></td></tr>\n";
+	while (my $ref = $sth4->fetch) {
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		print "<tr><td>$cand</td><td>$candtype</td><td>$result</td></tr>\n";
+		}
+	$sth4->finish;
+	
+	my $sth6 = $dbh->prepare(qq {select c.cand, c.result, c.candtype from cands c where c.pid = ? and c.result = "Not Elected" order by c.cand});
+	$sth6->execute($pid);
+	$sth6->bind_columns(\my($cand, $result, $candtype));
+	while (my $ref = $sth6->fetch) {
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		print "<tr><td>$cand</td><td>$candtype</td><td>$result</td></tr>\n";
+		}
+	$sth6->finish;
+
+	my $eqcand = qq{select cand from cands where pid = ? and candid = ?};
+	
+	my $sth7 = $dbh->prepare(qq {select c.cand, c.candtype, c.equiv from cands c where c.pid = ? and c.result IS NULL order by c.cand});
+	$sth7->execute($pid);
+	$sth7->bind_columns(\my($cand, $candtype, $equiv));
+	while (my $ref = $sth7->fetch) {
+		my $equivcand = $dbh->selectrow_array($eqcand, undef, $pid, $equiv);
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		print "<tr><td>$cand</td><td>$candtype</td><td>Same as $equivcand</td></tr>\n";
+		}
+	$sth7->finish;
+	
+	print "</table>\n</td></tr>";
+	}
+
+my $district;
+my $sth3 = $dbh->prepare(qq {select g.fname, g.lname, v.vote, d.district FROM votes v, greens g, districts d WHERE v.gid = g.gid AND v.distid = d.distid AND v.pid = ? order by d.district, g.lname, g.fname});
+$sth3->execute($pid);
+$sth3->bind_columns(\($fname, $lname, $vote, $district));
+if ($irvtype == 1)
+	{print "<h3>Abstensions</h3>\n";}
+else
+	{print "<h3>Votes Received</h3>\n";}
+print "<table cellpadding='4'>\n";
+if ($irvtype == 1)
+	{print "<tr><th>Delegation</th><th>Voter</th></tr>\n";}
+else
+	{print "<tr><th>Delegation</th><th>Vote</th><th>Voter</th></tr>\n";}
+while (my $ref = $sth3->fetch) {
+	if ($irvtype == 2)
+		{print "<tr><td>$district</td><td>$vote</td><td>$fname $lname</td></tr>\n";}
+	elsif ($irvtype == 1 and $vote eq "Abstain")
+		{print "<tr><td>$district</td><td>$fname $lname</td></tr>\n";}
+	}
+print "</table>\n";
+$sth3->finish;
+
+if (($phase eq "Closed") and ($irvtype == 2))
+	{
+	my $sth5 = $dbh->prepare(qq {select v.voterkey, c.cand, c.candtype, v.candrank from irvvotes v, cands c where v.pid = ? and v.pid = c.pid and v.candid = c.candid order by v.voterkey, v.candrank});
+	$sth5->execute($pid);
+	$sth5->bind_columns(\my($voterkey, $cand, $candtype, $candrank));
+	print "<h3>Ranked Choice Ballots</h3>\n";
+	print "<table cellpadding='4'>\n<tr><th>Ballot Key</th><th>Rank</th><th>Candidate</th><th>Type</th></tr>\n";
+	my $oldkey;
+	while (my $ref = $sth5->fetch)
+		{
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		if ($oldkey eq $voterkey)
+			{print "<tr><td>&nbsp;</td>";}
+		else
+			{print "<tr><td>$voterkey</td>";}
+		print "<td align='right'>$candrank</td><td>$cand</td><td>$candtype</td></tr>\n";
+		$oldkey = $voterkey;
+		}
+	print "</table>\n</td></tr>";
+	}
+
+if ($irvtype == 1)
+	{
+	my $sth5 = $dbh->prepare(qq {select iv.voterkey, c.cand, c.candtype, iv.candrank, g.fname, g.lname, d.district from irvvotes iv, cands c, greens g, districts d, votes v where iv.pid = ? and iv.pid = c.pid and iv.candid = c.candid and iv.voterkey = g.gid and iv.pid = v.pid and iv.voterkey = v.gid and d.distid = v.distid order by d.district, g.lname, g.fname, iv.candrank});
+	$sth5->execute($pid);
+	$sth5->bind_columns(\my($voterkey, $cand, $candtype, $candrank, $fname, $lname, $district));
+	print "<h3>Ranked Choice Ballots</h3>\n";
+	print "<table cellpadding='4'>\n<tr><th>Delegation</th><th>Voter</th><th>Rank</th><th>Candidate</th><th>Type</th></tr>\n";
+	my $oldkey;
+	while (my $ref = $sth5->fetch)
+		{
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		if ($oldkey eq $voterkey)
+			{print "<tr><td>&nbsp;</td><td>&nbsp;</td>";}
+		else
+			{print "<tr><td>$district</td><td>$fname $lname</td>";}
+		print "<td align='right'>$candrank</td><td>$cand</td><td>$candtype</td></tr>\n";
+		$oldkey = $voterkey;
+		}
+	print "</table>\n</td></tr>";
+	}
+
+$dbh->disconnect;
+
+print "<h3>Ballot File</h3>\n";
+
+open (BALLOT, "LIB/ballots/b$pid") || warn "Cannot open Ballot file!\n";
+while (<BALLOT>)
+	{
+	chomp $_;
+	print "$_<br>\n";
+	}
+close (BALLOT);
+
+print "<h3>Results File</h3>\n";
+
+open (RESULT, "LIB/ballots/r$pid") || warn "Cannot open Results file!\n";
+while (<RESULT>)
+	{
+	chomp $_;
+	print "$_<br>\n";
+	}
+close (RESULT);
+
+
+HeadFoot::foot();
+
+exit();
+}

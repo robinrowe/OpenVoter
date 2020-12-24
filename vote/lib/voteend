@@ -1,0 +1,351 @@
+#!/usr/bin/perl -w
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+#Nightly Voting Maintenance Tasks run from a cron job
+#Run this at 3AM Eastern Time, which is midnight Pacific Time
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use DBConnect;
+use DataCheck;
+use DateFormats;
+use Email;
+use POSIX;
+use Text::Wrap qw($columns &wrap);
+
+voteend();
+
+sub voteend {
+
+#Change the phases of proposals and ranked choice votes, based on their vote end dates.
+
+my $yesterday = DateFormats::past(1); #Since this is run after midnight Eastern Time (server time) dates are in the past.
+
+my ($pid, $date, $proptype);
+
+my $dbh = DBConnect::connectw();
+
+my $sth1 = $dbh->prepare(qq {update proposals set phaseid = ? where pid = ?});
+my $sth2 = $dbh->prepare(qq {update irv set phaseid = ?, presensval = ?, distnum = ? where pid = ?});
+
+#Voting to Certify or Closed
+#Proposals and Ranked Choice Votes that close at the same time will have the same $distnum value.
+
+#Get the distnum - the number of currently accredited delegations
+my $sql1 = qq {select count(distinct distid) as distnum from districts where actstatus = 1};
+my $distnum = $dbh->selectrow_array($sql1);
+
+#Get the number of delegations that voted
+my $sql2 = qq {select count(distinct distid) as voted from votes where pid = ?};
+
+#Voting to Closed - for Proposals.
+my $sth5 = $dbh->prepare(qq {select p.pid, p.voteend, p.presens, p.consens from proposals p where p.phaseid = 3 order by pid});
+$sth5->execute();
+my ($presens, $consens);
+$sth5->bind_columns(\($pid, $date, $presens, $consens));
+while (my $ref = $sth5->fetch)
+	{
+	if (DataCheck::eqdates($yesterday, $date))
+		{
+		#calculate the result
+		my ($consensval, $result);
+
+		#Calculate presens quorum
+		my $presensval = $distnum * $presens;
+		#round this up to the next whole number
+		$presensval = ceil($presensval); 
+
+		#Get the number of delegations that voted
+		my $voted = $dbh->selectrow_array($sql2, undef, $pid);
+
+		if ($voted >= $presensval) #presens quorum met
+			{
+			#Get the number of yes and no votes
+			my $sql3 = qq {select count(vote) as yesnovotes from votes where pid = ? and vote in ("Yes", "No")};
+			my $yesnovotes = $dbh->selectrow_array($sql3, undef, $pid);
+
+			#Calculate consens quorum
+			if ($consens == 0.5)	#round up by .5 to prevent a tied proposal from passing
+				{
+				$yesnovotes += .5;
+				}
+			$consensval = $yesnovotes * $consens;
+			#round this up to the next whole number
+			$consensval = ceil($consensval); 
+
+			my $sql4 = qq {select count(vote) as yesvotes from votes where pid = ? and vote = "Yes"};
+			my $yesvotes = $dbh->selectrow_array($sql4, undef, $pid);
+
+			if ($yesvotes >= $consensval)
+				{
+				$result = "Adopted";
+				}
+			else
+				{
+				$result = "Failed";
+				}
+			}
+		else
+			{
+			$consensval = 0;
+			$result = "Failed: Quorum Not Met";
+			}
+		#put this in an eval block:
+		$dbh->{AutoCommit} = 0; #enable transactions
+		eval {
+			my $sth = $dbh->prepare(qq {update proposals set presensval = ?, consensval = ?, distnum = ?, result = ? where pid = ?});
+			$sth->execute($presensval, $consensval, $distnum, $result, $pid);
+
+			#close the proposal
+			$sth1->execute(5, $pid);
+			$dbh->commit;
+			};
+		if ($@) 
+			{
+			$dbh->rollback;
+			}
+		else
+			{	
+			#send email to the listserv
+			my ($to, $replyto, $subject, $message) = closedmail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		$dbh->{AutoCommit} = 1; #enable autocommit
+		}
+	}
+$sth5->finish;
+
+#Voting to Certify - for Ranked Choice Votes.
+
+my $sth6 = $dbh->prepare(qq {select i.pid, i.voteend, i.presens from irv i where i.phaseid = 3 order by pid}); 
+$sth6->execute();
+$sth6->bind_columns(\($pid, $date, $presens));
+while (my $ref = $sth6->fetch)
+	{
+	if (DataCheck::eqdates($yesterday, $date))
+		{
+		#Get the number of delegations that voted
+		my $voted = $dbh->selectrow_array($sql2, undef, $pid);
+
+		#Calculate presens quorum
+		my $presensval = $distnum * $presens;
+		#round this up to the next whole number
+		$presensval = ceil($presensval); 
+
+		if ($voted >= $presensval) #presens quorum met
+			{
+			#change the phase to certify
+			$sth2->execute(4, $presensval, $distnum, $pid);
+
+			#send email to the Ranked Choice Vote Administrator
+			my ($to, $replyto, $subject, $message) = certifymail($pid);
+			Email::email($to, $replyto, $subject, $message);
+			}
+		else
+			{
+			$dbh->{AutoCommit} = 0; #enable transactions
+			eval {
+				#change the phase to closed
+				$sth2->execute(5, $presensval, $distnum, $pid);
+				#update the cands table to show presens quorum failed.
+				my $sth = $dbh->prepare(qq {update cands set result = "Quorum Failed" where pid = ?});
+				$sth->execute($pid);
+				$dbh->commit;
+				};
+			if ($@) 
+				{
+				$dbh->rollback;
+				}
+			else
+				{	
+				#send email to the listserv
+				my ($to, $replyto, $subject, $message) = failedirvmail($pid);
+				Email::email($to, $replyto, $subject, $message);
+				}
+			$dbh->{AutoCommit} = 1; #enable autocommit
+			}
+		}
+	}
+$sth6->finish;
+
+#Next - delete orphan write ins - those who people wrote in at one time but later changed their vote not to include that write in.
+
+#Get the write ins that were actually ranked:
+my @usedwriteins;
+my $sth7 = $dbh->prepare(qq {select iv.candid from irvvotes iv, cands c where iv.pid = ? and iv.pid = c.pid and iv.candid = c.candid and c.candtype = 2 order by iv.candid});
+$sth7->execute($pid);
+while (my $ref7 = $sth7->fetch)
+	{
+	push (@usedwriteins, $$ref7[0]);
+	}
+
+if (@usedwriteins)	#delete the unused write ins that resulted when people changed their vote, that is those not in the @usedwriteins array
+	{
+	my $bind = '?,' x (@usedwriteins - 1).'?';
+	my $sql8 = qq {delete from cands where candid not in ($bind) and pid = ? and candtype = 2};
+	my $sth8 = $dbh->prepare($sql8);
+	$sth8->execute(@usedwriteins, $pid);
+	}
+
+$dbh->disconnect;
+exit;
+}
+
+
+sub certifymail {
+#Informs the Ranked Choice Vote Administrator that they must certify the ranked choice vote.
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select i.title, g.fname, g.lname, g.email, i.voteend from irv i, greens g where i.pid = ? and i.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $fname, $lname, $email, $voteend, $result) = $sth1->fetchrow_array;
+$sth1->finish;
+
+$dbh->disconnect;
+
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();	
+
+my $replyto = Conf::admin();
+my $subject = "$acronym Ranked Choice Vote Requires Certification: ID $pid - $title";
+my $msg = "Voting for the following ranked choice vote is now closed.\n\n";
+$msg .= "Ranked Choice Vote ID: $pid \n";
+$msg .= "Ranked Choice Vote: $title \n";
+$msg .= "Ranked Choice Vote Administrator: $fname $lname\n";
+$msg .= "Voting Ended on: $voteend \n\n";
+$msg .= "Please login to the voting pages admin section\n";
+$msg .= "to certify this ranked choice vote\n\n";
+
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $email, $replyto, $subject, $msg;
+}
+
+sub failedirvmail {
+#Send message to the listserv if a ranked choice vote failed due to lack of presens quorum
+
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select i.title, i.voteend from irv i where i.pid = ?});
+$sth1->execute($pid);
+my ($title, $voteend) = $sth1->fetchrow_array;
+$sth1->finish;
+
+$dbh->disconnect;
+
+$voteend = DateFormats::display($voteend);
+
+my $acronym = Conf::acronym();
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "$acronym Ranked Choice Vote Results: ID $pid - $title";
+my $msg = "Voting for the following ranked choice vote is now closed.\n\n";
+$msg .= "Ranked Choice Vote ID: $pid \n";
+$msg .= "Ranked Choice Vote: $title \n";
+$msg .= "Voting Ended on: $voteend \n\n";
+$msg .= "The ranked choice vote failed due to lack of quorum.\n";
+$msg .= "For full details, please see:\n\n";
+my $scripturl = Conf::scripturl();
+$msg .= "$scripturl/irvresult?pid=$pid\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}
+
+sub closedmail {
+#Sends details about the closed proposal to the listserv
+	
+my $pid = shift;
+
+my $dbh = DBConnect::connectr();
+
+my $sth2 = $dbh->prepare(qq {select p.title, g.fname, g.lname, g.email, p.discussbegin, p.discussend, p.votebegin, p.voteend, p.result, p.presensval, p.presens, p.distnum, p.consensval, p.consens from proposals p, greens g where p.pid = ? and p.gid = g.gid});
+$sth2->execute($pid);
+my ($title, $fmfname, $fmlname, $fmemail, $discussbegin, $discussend, $votebegin, $voteend, $result, $presensval, $presens, $distnum, $consensval, $consens) = $sth2->fetchrow_array;
+$sth2->finish;
+
+my $cntdists = qq {select count(distinct distid) from votes where pid = ?};
+my $distvotes = $dbh->selectrow_array($cntdists, undef, $pid);
+
+my $cntvotes = qq {select count(vote) from votes where pid = ?};
+my $votesreceived = $dbh->selectrow_array($cntvotes, undef, $pid);
+
+if ($consens == 0.5) {$consens = "A Majority";}
+	
+my $cntyesnovotes = qq {select count(vote) from votes where pid = ? and vote in ("Yes", "No")};
+my $consensvotes = $dbh->selectrow_array($cntyesnovotes, undef, $pid);
+
+my $acronym = Conf::acronym;
+my $repunit = Conf::repunit;
+
+$discussbegin = DateFormats::display($discussbegin);
+$discussend = DateFormats::display($discussend);
+$votebegin = DateFormats::display($votebegin);
+$voteend = DateFormats::display($voteend);
+
+my $to = Conf::listserv();
+my $replyto = Conf::listserv();
+my $subject = "$acronym Proposal Results: ID $pid - $title";
+my $msg = "Voting for the following proposal is now closed. Here are the results:\n\n";
+$msg .= "Proposal ID: $pid \n";
+$msg .= "Proposal: $title \n";
+$msg .= "Floor Manager: $fmfname $fmlname, $fmemail \n";
+$msg .= "Discussion: $discussbegin - $discussend \n";
+$msg .= "Voting: $votebegin - $voteend \n\n";
+$msg .= "Result: $result \n\n";
+$msg .= "$votesreceived Total Votes Received from $distvotes $repunit\n";
+$msg .= "Presens Quorum: $presensval $presens of $distnum Accredited $repunit\n";
+$msg .= "Consens Quorum: $consensval $consens of $consensvotes Yes and No Votes\n\n";
+	
+my $sth3 = $dbh->prepare(qq {select count(vote), vote from votes where pid = ? group by vote order by vote desc});
+$sth3->execute($pid);
+$sth3->bind_columns(\my($votecnt, $vote));
+while (my $ref = $sth3->fetch) {
+	$msg .= "$vote: $votecnt\n";
+	}
+$sth3->finish;
+	
+$msg .= "\n";	
+	
+my $sth4 = $dbh->prepare(qq {select g.fname, g.lname, v.vote, d.district from greens g, votes v, districts d WHERE g.gid = v.gid AND v.distid = d.distid AND v.pid = ? order by d.district, g.lname, g.fname});
+$sth4->execute($pid);
+$sth4->bind_columns(\my($fname, $lname, $gvote, $district));
+while (my $ref = $sth4->fetch) {
+	$msg .= "$gvote: $fname $lname - $district\n";
+	}
+$sth4->finish;
+$dbh->disconnect;
+	
+$msg .= "\nFull proposal details and results are online at: \n\n";
+
+my $scripturl = Conf::scripturl();
+$msg .= "$scripturl/propresult?pid=$pid\n\n";
+$msg .= "Thank you and have a wonderful day!\n";
+$msg .= "--The $acronym Voting Admin\n";
+
+return $to, $replyto, $subject, $msg;
+}

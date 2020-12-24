@@ -1,0 +1,176 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+my $temp = qw(TEMP);
+use HeadFoot;
+use DBConnect;
+use DateFormats;
+use Conf;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=0;  # no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $cookiename = Conf::cookiename();
+my $q = new CGI;
+my $sid = $q->cookie("$cookiename");
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if (! $guid)
+	{
+	$session->delete();
+	$guid = "";
+	}
+
+start();
+
+sub start {
+
+my ($pid, $title, $voteend, $fname, $lname, $email, $result, $phaseid, $type, $moddate);
+
+HeadFoot::head($guid, $page);
+
+my $dbh = DBConnect::connectr();
+
+print "Voting ends at midnight Pacific time. Daylight Savings Time is observed. No votes will be accepted in email or after the voting deadline.<br><br>\n";
+
+print "<table width='95%' summary='layout table'>\n<tr><td width='49%'>\n";
+
+print "<table width='100%' border summary='Proposals or Ranked Choice Votes Under Discussion'>\n";
+print "<tr><th>Currently Under Discussion</th></tr>\n";
+
+my $cntp1 = qq {select count(pid) from proposals where phaseid = 2}; 
+my $prop1 = $dbh->selectrow_array($cntp1);
+my $cnti1 = qq {select count(pid) from irv where phaseid = 2}; 
+my $irv1 = $dbh->selectrow_array($cnti1);
+
+if ($prop1 or $irv1)
+	{
+	my $sth1 = $dbh->prepare(qq {select p.pid, p.title, g.fname, g.lname, g.email, "p" as type from proposals p, greens g where p.gid = g.gid and p.phaseid = 2 union select i.pid, i.title, g.fname, g.lname, g.email, "i" as type from irv i, greens g where i.gid = g.gid and i.phaseid = 2 order by pid});
+	$sth1->execute();
+	$sth1->bind_columns(\($pid, $title, $fname, $lname, $email, $type));
+	while (my $ref = $sth1->fetch) {
+		print "<tr><td><b>ID $pid - </b>\n";
+		if ($type eq "p")
+			{print "<a href='propdetail?pid=$pid'><b>$title</b></a><br>Floor Manager: \n";}
+		else
+			{print "<a href='irvdetail?pid=$pid'><b>$title</b></a><br>Ranked Choice Vote Administrator: \n";}
+		print "<a href='mailto:$email'>$fname $lname</a><br><a href='mailto:natlcomvotes\@green.gpus.org'>Send comments to the GP-US natlcomvotes listserv</a></td></tr>\n";
+		}
+	$sth1->finish();
+	}
+else
+	{print "<tr><td>None</td></tr>\n";}
+
+print "</table>\n";
+
+print "</td>\n<td width='2%'>&nbsp;</td>\n<td width='49%'>\n";
+
+print "<table width='100%' border summary='Proposals or Ranked Choice Votes Currently Being Voted On'>\n";
+print "<tr><th>Currently Voting</th></tr>\n";
+
+my $cntp2 = qq {select count(pid) from proposals where phaseid = 3}; 
+my $prop2 = $dbh->selectrow_array($cntp2);
+my $cnti2 = qq {select count(pid) from irv where phaseid = 3}; 
+my $irv2 = $dbh->selectrow_array($cnti2);
+
+if ($prop2 or $irv2)
+	{
+	my $sth2 = $dbh->prepare(qq {select p.pid, p.title, g.fname, g.lname, g.email, "p" as type from proposals p, greens g where p.gid = g.gid and p.phaseid = 3 union select i.pid, i.title, g.fname, g.lname, g.email, "i" as type from irv i, greens g where i.gid = g.gid and i.phaseid = 3 order by pid});
+	$sth2->execute();
+	$sth2->bind_columns(\($pid, $title, $fname, $lname, $email, $type));
+	while (my $ref = $sth2->fetch)
+		{
+		print "<tr><td><b>ID $pid - </b>\n";
+		if ($type eq "p")
+			{print "<a href='propdetail?pid=$pid'><b>$title</b></a><br>Floor Manager: \n";}
+		else
+			{print "<a href='irvdetail?pid=$pid'><b>$title</b></a><br>Ranked Choice Vote Administrator: \n";}
+		print "<a href='mailto:$email'>$fname $lname</a><br>\n";
+		print "<a href='vote'>Cast a Vote</a>\n";
+		if ($type eq "p")
+			{print "<br><a href='propresult?pid=$pid'>View Current Results</a></td></tr>\n";}
+		else
+			{print "<br><a href='irvresult?pid=$pid'>View Current Results</a></td></tr>\n";}
+		}
+	$sth2->finish;
+	}
+else
+	{print "<tr><td>None</td></tr>\n";}
+
+print<<EOF;
+</table>
+</td></tr>
+</table>
+
+<h4>Final Results for Recent Proposals/Ranked Choice Votes</h4>
+
+<table width='95%' border summary="Recent Results">
+
+<tr><th>ID</th><th>Proposal</th><th>Floor Manager</th><th>Result</th><th>Date</th></tr>
+EOF
+
+my $cntp3 = qq {select count(pid) from proposals where phaseid in (5, 6)}; 
+my $prop3 = $dbh->selectrow_array($cntp3);
+my $cnti3 = qq {select count(pid) from irv where phaseid in (5, 6)}; 
+my $irv3 = $dbh->selectrow_array($cnti3);
+print "<tr><td>None Yet... </td></tr>" unless $prop3 or $irv3;
+
+my $sth3 = $dbh->prepare(qq {select p.pid, p.title, p.moddate, p.result, g.fname, g.lname, p.phaseid, "p" as type from proposals p, greens g where p.gid = g.gid and p.phaseid in (5, 6) union select i.pid, i.title, i.moddate, "See Details" as result, g.fname, g.lname, i.phaseid, "i" as type from irv i, greens g where i.gid = g.gid and i.phaseid in (5, 6) ORDER BY pid desc limit 5});
+$sth3->execute();
+$sth3->bind_columns(\($pid, $title, $moddate, $result, $fname, $lname, $phaseid, $type));
+while (my $ref = $sth3->fetch) {
+	$voteend = DateFormats::tsdisplay($moddate);
+	print "<tr><td><b>$pid</b></td>\n";
+	print "<td width='45%'>";
+	if ($type eq "p")
+		{print "<a href='propdetail?pid=$pid'>";}
+	else
+		{print "<a href='irvdetail?pid=$pid'>";}
+	print "<b>$title</b></a></td>\n";
+	print "<td>$fname $lname</td>\n";
+	if ($type eq "p")
+		{print "<td><a href='propresult?pid=$pid'>";}
+	else
+		{print "<td><a href='irvresult?pid=$pid'>";}
+	if ($phaseid == 6)
+		{$result = "Cancelled";}
+	print "$result</a></td>\n";
+	print "<td>$voteend</td></tr>\n";
+	}
+$sth3->finish;
+$dbh->disconnect;
+my $oldresultspage = Conf::oldresultspage();
+print<<EOF;
+</table>
+<b><a href="voteresults">More...</a></b>
+<br><b><a href="$oldresultspage">Results prior to creation of this voting system</a></b>
+<br>
+EOF
+
+HeadFoot::foot();
+
+exit();
+}

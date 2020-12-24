@@ -1,0 +1,692 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use DateFormats;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[45]/) #only admins and sc members can modify IRV ranked choice votes
+	{
+	if (($q->param('addirv')) and (! $q->param('pid')))
+		{addirv();}
+	elsif  ($q->param('modirv'))
+		{modirv();}
+	elsif ($q->param('delirv'))
+		{delirv();}
+	elsif ($q->param('cancel'))
+		{
+		print $q->redirect (-location => "admin");
+		exit();
+		}
+	else
+		{irvform();}
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+sub irvform {
+
+my $pid = $q->param('pid');
+
+HeadFoot::head($guid, $page);
+print $message;
+
+my ($irvtype, $title, $gid, $numseats, $background, $discussbegin, $discussend, $votebegin, $voteend, $presens, $phase, $phaseid, $scid, $fname, $lname, %sclist, @sclist);
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select g.gid, g.fname, g.lname from greens g, greens_roles gr where g.gid = gr.gid and gr.roleid = 5 and actstatus = 1 order by lname, fname}); #Steering Committee is roleid 5
+$sth1->execute();
+$sth1->bind_columns(\($scid, $fname, $lname));
+while (my $ref = $sth1->fetch) {
+	$sclist{$scid} = "$lname, $fname";
+	}
+$sth1->finish;
+
+$sclist{0} = "";
+
+my @tempsclist = sort {$sclist{$a} cmp $sclist{$b}} keys %sclist;
+
+foreach $_(@tempsclist)	{
+	push(@sclist, $_);
+	}
+
+my @irvtype = (1, 2);
+my %irvtype = (1 => "Open Ballot", 2 => "Secret Ballot");
+
+print $q->start_form();
+
+if ($pid) {
+	my $sth2 = $dbh->prepare(qq {select i.irvtype, i.title, i.gid, i.numseats, i.background, i.discussbegin, i.discussend, i.votebegin, i.voteend, i.presens, i.phaseid, ph.phase from irv i, phases ph where pid = ? and i.phaseid = ph.phaseid});
+	$sth2->execute($pid);
+	($irvtype, $title, $gid, $numseats, $background, $discussbegin, $discussend, $votebegin, $voteend, $presens, $phaseid, $phase) = $sth2->fetchrow_array;
+	$sth2->finish;
+	print "<h3>Modify Ranked Choice Vote</h3>\n";
+	print "<table cellpadding='4'>\n";
+	print "<tr><th>Ranked Choice Vote ID</td><td>$pid</td></tr>\n";
+	}
+else 	{
+	print "<h3>Add New Ranked Choice Vote</h3>\n";
+	print "<table cellpadding='4'>\n";
+	}
+
+print "<tr><th>Ranked Choice Vote Title</th><td>\n";
+if ($phaseid < 3)
+	{
+	print $q->textfield(-name => "title",
+		-size => 50,
+		-maxlength => 100,
+		-default => $title);
+	}
+else
+	{print $title;}
+print "</td></tr>\n";
+
+print "<tr><th>Type</th><td>\n";
+if ($phaseid < 3)
+	{
+	print $q->radio_group(-name => "irvtype",
+		-values => \@irvtype,
+		-default => $irvtype,
+		-labels => \%irvtype);
+	}
+else
+	{
+	print "$irvtype{$irvtype}";
+	}
+
+print "</td></tr>\n";
+
+print "<tr><th>Ranked Choice Vote Administrator</th><td>\n";
+print $q->popup_menu(-name => 'gid',
+	-values => \@sclist,
+	-labels => \%sclist,
+	-default => $gid);
+print "</td></tr>\n";
+
+print "<tr><th>Phase</th><td>$phase</td></tr>\n";
+
+print "<tr><th>Number of Seats</th><td>\n";
+if ($phaseid < 3)
+	{
+	print $q->textfield(-name => "numseats",
+		-size => 10,
+		-maxlength => 2,
+		-default => $numseats);
+	}
+else
+	{print $numseats;}
+print "</td></tr>\n";
+
+$discussbegin = DateFormats::futurefmt(1) unless $discussbegin;
+
+print "<tr><th>Discussion Start Date</th><td>\n";
+print $q->textfield(-name => "discussbegin",
+	-size => 10,
+	-maxlength => 10,
+	-default => $discussbegin);
+print " YYYY-MM-DD Format</td></tr>\n";
+
+$discussend = DateFormats::futurefmt(22) unless $discussend;
+
+print "<tr><th>Discussion End Date</th><td>\n";
+print $q->textfield(-name => "discussend",
+	-size => 10,
+	-maxlength => 10,
+	-default => $discussend);
+print "</td></tr>\n";
+
+$votebegin = DateFormats::futurefmt(23) unless $votebegin;
+
+print "<tr><th>Voting Start Date</th><td>\n";
+print $q->textfield(-name => "votebegin",
+	-size => 10,
+	-maxlength => 10,
+	-default => $votebegin);
+print "</td></tr>\n";
+
+$voteend = DateFormats::futurefmt(29) unless $voteend;
+
+print "<tr><th>Voting End Date</th><td>\n";
+print $q->textfield(-name => "voteend",
+	-size => 10,
+	-maxlength => 10,
+	-default => $voteend);
+print "</td></tr>\n";
+
+print "<tr><th>Presens Quorum</th><td>\n";
+print $q->radio_group(-name => "presens",
+	-values => ["0.6666"],
+	-default => $presens,
+	-labels => {"0.6666" => "2/3"});
+print "</td></tr>\n";
+
+print "</table>\n";
+
+print "<h4>Background</h4>\n";
+print $q->textarea(-name => "background",
+	-default => $background,
+	-rows => 10,
+	-cols => 100,
+	-wrap => "virtual");
+
+if ($pid)
+	{
+	print "<h3>Candidates on Ballot</h3>\n";
+
+	my $sth = $dbh->prepare(qq {select candid, cand, actstatus, info from cands where pid = ? and candtype = 1 order by candtype, cand});
+	$sth->execute($pid);
+	$sth->bind_columns(\my($candid, $cand, $actstatus, $info));
+	while (my $ref = $sth->fetch)
+		{
+		print "<h4>$cand</h4>\n";
+		print "<input type=hidden name=candid value=\"$candid\">\n";
+		if ($phaseid < 3)
+			{
+			print $q->radio_group (
+				-name  => "$candid",
+				-values => [1, 0],
+				-default => $actstatus,
+				-labels => {1 => "Active", 0 => "Inactive"});
+			print "\n<br><b>Bio</b><br>\n";
+			print $q->textarea(-name => "info$candid",
+				-default => $info,
+				-rows => 6,
+				-cols => 100,
+				-wrap => "virtual");
+			}
+		else 
+			{
+			$info = DataCheck::html($info);
+			print "<b>Bio</b><br>\n$info\n\n";
+			}
+		}
+	}
+if ($phaseid < 3)
+	{
+	print "<h3>New Candidate</h3>\n";
+
+	print $q->textfield(-name => "cand",
+		-size => 30,
+		-maxlength => 50);
+	print "<br>\n";
+
+	print "<b>Bio:</b><br>\n";
+	print $q->textarea(-name => "info",
+		-rows => 6,
+		-cols => 100,
+		-wrap => "virtual");
+	}
+
+if ($pid) { 
+	print "<br><br>\n";
+	print $q->hidden('pid', "$pid");
+	print $q->submit('modirv', 'Modify Ranked Choice Vote');
+	print "\n&nbsp;&nbsp;&nbsp;\n";
+	print $q->submit('delirv', 'Delete Ranked Choice Vote');
+	}
+else {
+	print "<br><br>\n";
+	print $q->submit('addirv', 'Add Ranked Choice Vote');
+	}
+
+print "\n&nbsp;&nbsp;&nbsp;\n";
+print $q->submit('cancel', "    Cancel    ");
+
+print "\n";
+
+print $q->end_form();
+
+$dbh->disconnect;
+
+print "</table>\n";
+
+HeadFoot::foot();
+exit();
+}
+
+sub addirv {
+
+#Check the data
+
+$message = "";
+my $error = 0;
+my ($pid, $gid, $irvtype, $title, $background, $discussbegin, $discussend, $votebegin, $voteend, $presens, $numseats, $candid, $candstatus, %candstat, %candinfo);
+
+if ($q->param('irvtype') =~ /[12]/)
+	{$irvtype = $q->param('irvtype');}
+else
+	{
+	$message .= "Invalid Ranked Choice Vote Type. ";
+	$error = 1;
+	}
+
+$background = DataCheck::striphtml($q->param('background'));
+unless ($background)
+	{
+	$message .= "Invalid background. ";
+	$error = 1;
+	}
+
+$title = DataCheck::alphanumext($q->param('title'));
+unless ($title)
+	{
+	$message .= "Invalid title. ";
+	$error = 1;
+	}
+
+$numseats = DataCheck::num($q->param('numseats'));
+unless ($numseats)
+	{
+	$message .= "Invalid number of seats. ";
+	$error = 1;
+	}
+
+if (DataCheck::valrole($q->param('gid'), 5, 1))  #only sc members can be floor managers
+	{$gid = $q->param('gid');}
+else
+	{
+	$message .= "Invalid floor manager. ";
+	$error = 1;
+	}
+
+my $now = DateFormats::futurefmt(0);
+my $db = $q->param('discussbegin');
+my $de = $q->param('discussend');
+my $vb = $q->param('votebegin');
+my $ve = $q->param('voteend');
+
+if ((DataCheck::date($db)) and (DataCheck::compdates($now, $db)))
+	{$discussbegin = $q->param('discussbegin');}
+else
+	{
+	$message .= "Invalid discussion begin date. ";
+	$error = 1;
+	}
+
+if ((DataCheck::date($de)) and (DataCheck::compdates($db, $de)))
+	{$discussend = $q->param('discussend');}
+else
+	{
+	$message .= "Invalid discussion end date. ";
+	$error = 1;
+	}
+
+if ((DataCheck::date($vb)) and (DataCheck::compdates($de, $vb)))
+	{$votebegin = $q->param('votebegin');}
+else
+	{
+	$message .= "Invalid vote begin date. ";
+	$error = 1;
+	}
+
+if ((DataCheck::date($vb)) and (DataCheck::compdates($vb, $ve)))
+	{$voteend = $q->param('voteend');}
+else
+	{
+	$message .= "Invalid vote end date. ";
+	$error = 1;
+	}
+
+if (DataCheck::presens($q->param('presens')))
+	{$presens = $q->param('presens');}
+else
+	{$message .= "Invalid presens quorum number. ";
+	$error = 1;
+	}
+
+my $cand = DataCheck::alphanumext($q->param('cand'));
+unless ($cand)
+	{
+	$message .= "At least one candidate is required. ";
+	$error = 1;
+	}
+
+my $info = DataCheck::striphtml($q->param('info'));
+
+unless ($error)
+	{
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		my $sql1 = qq {select propid from propid};
+		$pid = $dbh->selectrow_array($sql1);
+		my $sql2 = qq {select candid from candid};
+		my $cid = $dbh->selectrow_array($sql2);
+		my $sth1 = $dbh->prepare(qq {insert into irv (pid, background, irvtype, gid, title, numseats, discussbegin, discussend, votebegin, voteend, presens, phaseid) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)});
+		$sth1->execute($pid, $background, $irvtype, $gid, $title, $numseats, $discussbegin, $discussend, $votebegin, $voteend, $presens);
+		my $sth2 = $dbh->prepare(qq {insert into cands (candid, pid, cand, info, candtype) VALUES(?, ?, ?, ?, 1)});
+		$sth2->execute($cid, $pid, $cand, $info);
+		my $sth3 = $dbh->prepare(qq {update propid set propid = ?});
+		my $newpid = $pid + 1;
+		$sth3->execute($newpid);
+		my $sth4 = $dbh->prepare(qq {update candid set candid = ?});
+		my $newcid = $cid + 1;
+		$sth4->execute($newcid);
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The ranked choice vote was not added due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		irvform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		print $q->redirect (-location => "adminirv?pid=$pid");
+		exit();
+		}
+	}
+else
+	{
+	$message = "<font color='red'>$message</font>";
+	$q->param(title => $title);
+	$q->param(background => $background);
+	$q->param(numseats => $numseats);
+	$q->param(info => $info);
+	irvform();
+	}
+}
+
+sub modirv {
+
+#Check the data
+$message = "";
+my $error = 0;
+my $id = $q->param('pid');
+my ($pid, $gid, $irvtype, $title, $discussbegin, $discussend, $votebegin, $voteend, $presens, $numseats, $cand, $info, $candid, $candstatus, %candstat, %candinfo, $type);
+
+#Only allow ranked choice votes that aren't in certification yet to be modified.
+if (DataCheck::irvstat($id, 4, "lt")) 
+	{$pid = $q->param('pid');}
+else
+	{
+	$message .= "Invalid ranked choice vote. ";
+	$error = 1;
+	}
+
+#Only allow ranked choice votes that are new or in discussion to have all fields modified.
+#Once voting starts, you can modify the ranked choice vote admin, dates, background, and presens quorum.
+if (DataCheck::irvstat($pid, 3, "lt"))
+	{
+	$type = "Full";
+	if ($q->param('irvtype') =~ /[12]/)
+		{$irvtype = $q->param('irvtype');}
+	else
+		{
+		$message .= "Invalid ranked choice vote type. ";
+		$error = 1;
+		}
+
+	#get the list of candidates on the ballot and their status. we don't deal with write ins here, that's in the certifyirv script.
+	my $dbh = DBConnect::connectr();
+	my $sth = $dbh->prepare(qq {select candid from cands where pid = ? and candtype = 1});
+	$sth->execute($pid);
+	$sth->bind_columns(\my($candid));
+	while (my $ref = $sth->fetch) {
+		$candstat{$candid} = $q->param("$candid");
+		$candinfo{$candid} = DataCheck::striphtml($q->param("info$candid"));
+		}
+	$sth->finish;
+	$dbh->disconnect;
+
+	$title = DataCheck::alphanumext($q->param('title'));
+	unless ($title)
+		{
+		$message .= "Invalid title. ";
+		$error = 1;
+		}
+	
+	$numseats = DataCheck::num($q->param('numseats'));
+	unless ($numseats)
+		{
+		$message .= "Invalid number of seats. ";
+		$error = 1;
+		}
+	
+	$cand = DataCheck::alphanumext($q->param('cand'));
+	unless ($cand)
+		{
+		$message .= "At least one candidate is required. ";
+		$error = 1;
+		}
+	$info = DataCheck::striphtml($q->param('info'));
+	}
+else
+	{
+	$type = "Partial";
+	}
+
+my $background = DataCheck::striphtml($q->param('background'));
+unless ($background)
+	{
+	$message .= "Invalid background. ";
+	$error = 1;
+	}
+
+if (DataCheck::valrole($q->param('gid'), 5, 1))  #only sc members can be floor managers
+	{$gid = $q->param('gid');}
+else
+	{
+	$message .= "Invalid floor manager. ";
+	$error = 1;
+	}
+
+my $now = DateFormats::futurefmt(0);
+my $db = $q->param('discussbegin');
+my $de = $q->param('discussend');
+my $vb = $q->param('votebegin');
+my $ve = $q->param('voteend');
+
+if ((DataCheck::date($db)) and (DataCheck::compdates($now, $db) or DataCheck::irvstat($id, 1, "gt")))
+	{$discussbegin = $q->param('discussbegin');}
+else
+	{
+	$message .= "Invalid discussion begin date. ";
+	$error = 1;
+	}
+if ((DataCheck::date($de)) and (DataCheck::compdates($db, $de)))
+	{$discussend = $q->param('discussend');}
+else
+	{
+	$message .= "Invalid discussion end date. ";
+	$error = 1;
+	}
+if ((DataCheck::date($vb)) and (DataCheck::compdates($de, $vb)))
+	{$votebegin = $q->param('votebegin');}
+else
+	{
+	$message .= "Invalid vote begin date. ";
+	$error = 1;
+	}
+if ((DataCheck::date($vb)) and (DataCheck::compdates($vb, $ve)))
+	{$voteend = $q->param('voteend');}
+else
+	{
+	$message .= "Invalid vote end date. ";
+	$error = 1;
+	}
+if (DataCheck::presens($q->param('presens')))
+	{$presens = $q->param('presens');}
+else
+	{
+	$message .= "Invalid presens quorum number. ";
+	$error = 1;
+	}
+
+unless ($error)
+	{
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		if ($type eq "Full") 
+			{ #allow all fields to be modified.
+			my $sth1 = $dbh->prepare(qq {update irv set irvtype = ?, title = ?, background = ?, gid = ?, numseats = ?, discussbegin = ?, discussend = ?, votebegin = ?, voteend = ?, presens = ? where pid = ?});
+			$sth1->execute($irvtype, $title, $background, $gid, $numseats, $discussbegin, $discussend, $votebegin, $voteend, $presens, $pid);
+			
+			my $sth2 = $dbh->prepare(qq {update cands set info = ?, actstatus = 1 where candid = ?});
+			my $sth3 = $dbh->prepare(qq {update cands set info = ?, actstatus = 0 where candid = ?});
+			my $sth5 = $dbh->prepare(qq {update cands set actstatus = 1 where candid = ?});
+			my $sth6 = $dbh->prepare(qq {update cands set actstatus = 0 where candid = ?});
+			while (($candid, $candstatus) = each(%candstat))
+				{
+				my $cinfo = $candinfo{$candid};
+				if ($candstatus == 1)
+					{
+					if ($cinfo)
+						{
+						$sth2->execute($cinfo, $candid);
+						}
+					else
+						{
+						$sth5->execute($candid);
+						}
+					}
+				else
+					{
+					if ($cinfo)
+						{
+						$sth3->execute($cinfo, $candid);
+						}
+					else
+						{
+						$sth6->execute($candid);
+						}
+					}
+				}
+			if ($cand)
+				{
+				my $sql = qq {select candid from candid};
+				my $cid = $dbh->selectrow_array($sql);
+				my $sth4 = $dbh->prepare(qq {insert into cands (candid, pid, cand, info, candtype) VALUES(?, ?, ?, ?, 1)});
+				$sth4->execute($cid, $pid, $cand, $info);
+				my $newcandid = $cid + 1;
+				my $sth7 = $dbh->prepare(qq {update candid set candid = ?});
+				$sth7->execute($newcandid);
+				}
+			}
+		else	#allow only the dates, ranked choice vote admin, background and presens quorum can be modified.
+			{
+			my $sth8 = $dbh->prepare(qq {update irv set background = ?, gid = ?, discussbegin = ?, discussend = ?, votebegin = ?, voteend = ?, presens = ? where pid = ?});
+			$sth8->execute($background, $gid, $discussbegin, $discussend, $votebegin, $voteend, $presens, $pid);
+			
+			}
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The ranked choice vote was not modified due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		irvform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		print $q->redirect (-location => "adminirv?pid=$pid");
+		exit();
+		}
+	}
+else
+	{
+	$message = "<font color='red'>$message</font>";
+	$q->param(title => $title);
+	irvform();
+	}
+}
+
+sub delirv {
+my $pid = $q->param('pid');
+if (DataCheck::irvstat($pid, '4', 'lt')) #proposals can't be deleted once voting has ended.
+	{
+	my ($sql1, $sql2);
+	if (DataCheck::irvstat($pid, '1', 'eq')) #only delete new proposals - other proposals are cancelled.
+		{
+		$sql1 = qq {delete from irv where pid = ?};
+		$sql2 = qq {delete from cands where pid = ?};
+		}
+	else 
+		{
+		$sql1 = qq {update irv set phaseid = 6 where pid = ?};
+		$sql2 = qq {update cands set actstatus = 0 where pid = ?};
+		}
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		my $sth1 = $dbh->prepare($sql1);
+		my $sth2 = $dbh->prepare($sql2);
+		$sth1->execute($pid);
+		$sth2->execute($pid);
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The ranked choice vote was not deleted due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		irvform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		print $q->redirect (-location => "admin");
+		exit();
+		}
+	}
+else
+	{
+	my $msg  = "<font color='red'>Sorry, you can't delete ranked choice vote ID $pid</font><br>";
+	print $q->redirect (-location => "admin?message=$msg");
+	exit();
+	}
+}

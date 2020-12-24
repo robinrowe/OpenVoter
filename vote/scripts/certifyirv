@@ -1,0 +1,417 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use DateFormats;
+use ChoiceCounter;
+use Email;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+use Fcntl ':flock';
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[45]/) #only admins and sc members can modify IRV ranked choice votes
+	{
+	if ($q->param('writeins')) {
+		writeins();
+		}
+	elsif ($q->param('certify')) {
+		certify();
+		}
+	elsif ($q->param('cancel')) {
+		print $q->redirect (-location => "admin");
+		exit();
+		}
+	else {
+		irvform();
+		}
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+
+sub irvform {
+
+my $pid;
+my $id = $q->param('pid');
+
+if (DataCheck::irvstat($id, 4, "eq")) 
+	{$pid = $q->param('pid');}
+else
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+my (%candlist, @candlist);
+
+HeadFoot::head($guid, $page);
+print $message;
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select i.title, i.numseats, i.gid, g.fname, g.lname from irv i, greens g where i.pid = ? and i.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $numseats, $gid, $fname, $lname) = $sth1->fetchrow_array;
+$sth1->finish;
+
+my $sth2 = $dbh->prepare(qq {select candid, cand from cands where pid = ? and actstatus = 1 order by cand}); #Get the list of write ins.
+$sth2->execute($pid);
+$sth2->bind_columns(\my($cid, $candname));
+while (my $ref = $sth2->fetch) {
+	$candlist{$cid} = "$candname";
+	}
+$sth1->finish;
+
+$candlist{0} = "";
+
+my @tempcandlist = sort {$candlist{$a} cmp $candlist{$b}} keys %candlist;
+
+foreach $_(@tempcandlist)	{
+	push(@candlist, $_);
+	}
+
+
+print "<h3>Ranked Choice Vote Certification</h3>\n";
+print "<table cellpadding='4'>\n";
+
+print "<tr><th>Ranked Choice Vote Title</th><td>$title</td></tr>\n";
+
+print "<tr><th>Ranked Choice Vote Administrator</th><td>$fname $lname</td></tr>\n";
+
+print "<tr><th>Number of Seats</th><td>$numseats</td></tr>\n";
+
+print "<tr><th>Candidates</th><td>\n";
+
+print $q->start_form();
+
+my $sth = $dbh->prepare(qq {select candid, cand, candtype, actstatus from cands where pid = ?});
+$sth->execute($pid);
+$sth->bind_columns(\my($candid, $cand, $candtype, $actstatus));
+
+print "<table cellpadding='4'>";
+print "<tr><td><b>Candidate</b></td><td><b>Status</b></td><td><b>&nbsp;&nbsp;&nbsp; Type</b></td><td><b>Equivalent Write-In</b></td></tr>";
+
+while (my $ref = $sth->fetch)
+	{
+	print "<tr><td>$cand</td><td>\n";
+	print $q->radio_group (
+		-name  => "$candid",
+		-values => [1, 0],
+		-default => $actstatus,
+		-labels => {1 => "Active", 0 => "Withdrawn"}
+		);
+	if ($candtype == 1)
+		{print "</td>\n<td>&nbsp;&nbsp;&nbsp; On Ballot</td><td>&nbsp;</td></tr>\n";}
+	else
+		{
+		print "</td>\n<td>&nbsp;&nbsp;&nbsp; Write In</td><td>\n";
+		print $q->popup_menu(-name => "e$candid",
+			-values => \@candlist,
+			-labels => \%candlist,
+			-default => 0);
+		print "</td></tr>\n";
+		}
+	}
+
+print "</table>\n";
+print "</td></tr>\n";
+
+print "<tr><td>&nbsp;</td><td>\n";
+
+print $q->hidden('pid', "$pid");
+print $q->submit('writeins', 'Confirm Write-Ins');
+
+print "\n&nbsp;&nbsp;&nbsp;\n";
+print $q->submit('certify', 'Certify Ranked Choice Vote');
+
+print "\n&nbsp;&nbsp;&nbsp;\n";
+print $q->submit('cancel', "    Cancel    ");
+
+print "\n</td></tr>\n";
+
+print $q->end_form();
+
+$dbh->disconnect;
+
+print "</table>\n";
+
+HeadFoot::foot();
+exit();
+}
+
+sub writeins {
+my ($pid, @cands, $cid, $candid);
+my $id = $q->param('pid');
+if (DataCheck::irvstat($id, 4, "eq")) 
+	{$pid = $q->param('pid');}
+
+my $dbh = DBConnect::connectw();
+my $sth1 = $dbh->prepare(qq {select candid from cands where pid = ? order by candid});
+my $sth2 = $dbh->prepare(qq {update cands set actstatus = 1 where pid = ? and candid = ?});
+my $sth3 = $dbh->prepare(qq {update cands set actstatus = 0 where pid = ? and candid = ?});
+my $sth4 = $dbh->prepare(qq {update cands set equiv = ? where pid = ? and candid = ?});
+$sth1->execute($pid);
+$sth1->bind_columns(\($cid));
+while (my $ref = $sth1->fetch)
+	{
+	push (@cands, $cid);
+	}
+$sth1->finish;
+
+my @cids = @cands;
+
+#status
+foreach $candid(@cands)
+	{
+	my $status = $q->param("$candid");
+	if ($status == 1)
+		{$sth2->execute($pid, $candid);}
+	else
+		{$sth3->execute($pid, $candid);}
+	}
+
+#equivalents
+foreach $candid(@cands)
+	{
+	my $equiv = $q->param("e$candid");
+	next if $equiv == $candid;
+	next if $equiv == 0;
+	#test for $equiv existing in the @cands array.
+	foreach $cid(@cids)
+		{
+		if ($equiv == $cid)
+			{$sth4->execute($equiv, $pid, $candid);}
+		}
+	}
+
+$dbh->disconnect;
+irvform();
+}
+
+sub certify {
+#Verify that this ranked choice vote is in certify phase
+my ($pid, @cands);
+my $id = $q->param('pid');
+if (DataCheck::irvstat($id, 4, "eq")) 
+	{$pid = $q->param('pid');}
+
+my $dbh = DBConnect::connectw();
+
+my $sth1 = $dbh->prepare(qq {select i.title, i.numseats, i.presens, i.presensval, i.distnum, g.fname, g.lname, g.email from irv i, greens g where pid = ? and i.gid = g.gid});
+$sth1->execute($pid);
+my ($title, $numseats, $presens, $presensval, $distnum, $fname, $lname, $email) = $sth1->fetchrow_array;
+$sth1->finish;
+
+my $cntb = qq {select count(distinct voterkey) from irvvotes where pid = ?}; 
+my $numballots = $dbh->selectrow_array($cntb, undef, $pid);
+
+my $cntd = qq {select count(distinct distid) from votes where pid = ?}; 
+my $distvotes = $dbh->selectrow_array($cntd, undef, $pid);
+
+my $sth2 = $dbh->prepare(qq {select candid, cand, equiv, actstatus from cands where pid = ?});
+
+my $sth3 = $dbh->prepare(qq {select i.voterkey, i.candid, c.equiv from irvvotes i left join cands c on i.candid = c.candid where i.pid = ? order by voterkey, candrank});
+
+# Make a text file to be used by choice-counter.pl 
+
+if ($pid =~ /^([-\@\w.]+)$/) 
+	{$pid = $1;}     # $data now untainted
+else 
+	{
+	$pid = undef;
+	$message = "Invalid Ranked Choice Vote ID";
+	}
+
+
+my $ballotfile = "BALLOTS/b" . $pid;
+
+open (BALLOT, ">>$ballotfile");
+#flock (BALLOT, LOCK_EX) || die "Lock failed!\n";
+print BALLOT "title=$title\n";
+print BALLOT "seats=$numseats\n";
+print BALLOT "threshold=droop\n";
+print BALLOT "threshold=strict\n";
+print BALLOT "verbose=0\n";
+print BALLOT "approval=yes\n";
+print BALLOT "random=37863\n";
+
+$sth2->execute($pid);
+$sth2->bind_columns(\my($candid, $cand, $equiv, $actstatus));
+while (my $ref = $sth2->fetch) {
+	if ($equiv)
+		{
+		print BALLOT "#Write-In $candid - $cand is the same as candidate ID $equiv\n";
+		}
+	elsif ($actstatus == 1) #active candidates;
+		{
+		push (@cands, $candid);
+		print BALLOT "candidate=$candid $cand\n";
+		}
+	else	#withdrawn candidates
+		{
+		push (@cands, $candid);
+		print BALLOT "withdrawn=$candid $cand\n";
+		}
+	}
+
+print BALLOT "ballots=$numballots";
+
+$sth3->execute($pid);
+$sth3->bind_columns(\my($voterkey, $cid, $eq));
+my $oldkey = "";
+while (my $ref = $sth3->fetch) 
+	{
+	$cid = $eq if $eq;
+	if ($voterkey eq $oldkey)
+		{
+		print BALLOT " $cid";
+		}
+	else
+		{
+		print BALLOT "\n$cid";
+		}
+	$oldkey = $voterkey;
+	}
+print BALLOT "\nend\n";
+
+close (BALLOT);
+
+#Prepare the update statements:
+my $sth4 = $dbh->prepare(qq {update cands set result = ? where pid = ? and candid = ?});
+my $sth5 = $dbh->prepare(qq {update irv set phaseid = 5 where pid = ?});
+#Prepare the query to get data to include in the email to the listserv:
+my $sth6 = $dbh->prepare(qq {select cand, result, equiv from cands where pid = ? order by result, cand});
+#Call choice-counter.pl.
+my $resultsfile = "LIB/ballots/r" . $pid;
+
+if (ChoiceCounter::choice($pid))
+	{
+	#Read the results file.
+	open (RES, $resultsfile);
+	while (<RES>)
+		{
+		chomp $_;
+		my ($cid, $result) = split/,/;
+		#Write the results to the cands table.
+		$result = "Not Elected" unless $result eq "Elected" or $result eq "Withdrawn";
+		$sth4->execute($result, $pid, $cid);
+		}
+	close (RES);
+	$sth5->execute($pid);
+
+	#send Email
+	my $to = Conf::listserv();
+	my $replyto = Conf::listserv();
+	my $acronym = Conf::acronym();
+	my $repunit = Conf::repunit();
+	my $subject = "$acronym Ranked Choice Vote Results: ID $pid - $title";
+	my $msg = "The following ranked choice vote has been certified. Here are the results:\n\n";
+	$msg .= "Ranked Choice Vote ID: $pid \n";
+	$msg .= "Ranked Choice Vote: $title \n";
+	$msg .= "Floor Manager: $fname $lname, $email \n";
+	$msg .= "Result:\n";
+	$msg .= "$numballots Ballots Cast by $distvotes $repunit\n";
+	$msg .= "Presens Quorum: $presensval $presens of $distnum Accredited $repunit\n";
+	my $scripturl = Conf::scripturl();
+	$msg .= "Full details are available at:\n\n";
+	$msg .= "$scripturl/irvresult?pid=$pid\n\n";
+	
+	my ($result, $candtype, $equiv);
+	
+	my $sth6 = $dbh->prepare(qq {select c.cand, c.result, c.candtype from cands c where c.pid = ? and c.result = "Elected" order by c.candtype, c.cand});
+	$sth6->execute($pid);
+	$sth6->bind_columns(\($cand, $result, $candtype));
+	while (my $ref = $sth6->fetch) {
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		$msg .= "$cand\t$candtype\t$result\n";
+		}
+	$sth6->finish;
+	
+	my $sth7 = $dbh->prepare(qq {select c.cand, c.result, c.candtype from cands c where c.pid = ? and c.result = "Not Elected" order by c.cand});
+	$sth7->execute($pid);
+	$sth7->bind_columns(\($cand, $result, $candtype));
+	while (my $ref = $sth7->fetch) {
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		$msg .= "$cand \t$candtype\t$result\n";
+		}
+	$sth7->finish;
+
+	my $eqcand = qq{select cand from cands where pid = ? and candid = ?};
+	
+	my $sth8 = $dbh->prepare(qq {select c.cand, c.candtype, c.equiv from cands c where c.pid = ? and c.result IS NULL order by c.cand});
+	$sth8->execute($pid);
+	$sth8->bind_columns(\($cand, $candtype, $equiv));
+	while (my $ref = $sth8->fetch) {
+		my $equivcand = $dbh->selectrow_array($eqcand, undef, $pid, $equiv);
+		if ($candtype == 1)
+			{$candtype = "On Ballot";}
+		else
+			{$candtype = "Write In";}
+		$msg .= "$cand\t$candtype\tSame as $equivcand\n";
+		}
+	$sth7->finish;
+	
+	$dbh->disconnect;
+
+	Email::email($to, $replyto, $subject, $msg);
+	print $q->redirect (-location => "irvresult?pid=$pid");
+	exit();
+	}
+else
+	{
+	$dbh->disconnect;
+	my $admin = Conf::admin;
+	$message = "An error occured and the ranked choice vote was not certified. Please try again. If the second try doesn't work, please contact the <a href=\"mailto:$admin\">voting admin</a>.";
+	irvform();
+	}
+}

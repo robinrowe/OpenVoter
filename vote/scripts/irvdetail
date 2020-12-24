@@ -1,0 +1,128 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DateFormats;
+use DataCheck;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=0;  # no posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if (! $guid)
+	{
+	$session->delete();
+	$guid = "";
+	}
+
+start();
+
+sub start {
+
+my $pid = $q->param('pid');
+
+HeadFoot::head($guid, $page);
+
+print "<h3>Ranked Choice Vote Details</h3>\n";
+print "<table cellpadding='4'>\n";
+
+my $dbh = DBConnect::connectr();
+my $sth1 = $dbh->prepare(qq {select i.title, i.irvtype, g.fname, g.lname, g.email, i.numseats, i.background, i.discussbegin, i.discussend, i.votebegin, i.voteend, i.presens, i.presensval, ph.phase, i.distnum, i.moddate from irv i, greens g, phases ph where i.gid = g.gid and i.phaseid = ph.phaseid and i.pid = ?});
+my $sth2 = $dbh->prepare(qq {select cand from cands where actstatus = 1 and candtype = 1 and pid = ?});
+my $sth3 = $dbh->prepare(qq {select cand, info from cands where actstatus = 1 and candtype = 1 and pid = ?});
+
+$sth1->execute($pid);
+$sth1->bind_columns(\my($title, $irvtype, $fname, $lname, $email, $numseats, $background, $discussbegin, $discussend, $votebegin, $voteend, $presens, $presensval, $phase, $distnum, $moddate));
+my $electiontype;
+while (my $ref = $sth1->fetch) {
+	if ($irvtype == 1)
+		{$electiontype = "Open Ballot";}
+	else
+		{$electiontype = "Secret Ballot";}
+	print "<tr><th>Ranked Choice Vote ID</th><td>$pid</td></tr>\n";
+	print "<tr><th>Ranked Choice Vote</th><td>$title</td></tr>\n";
+	print "<tr><th>Type</th><td>$electiontype</td></tr>\n";
+	print "<tr><th>Number of Seats</th><td>$numseats</td></tr>\n";
+	print "<tr><th>Ranked Choice Vote Administrator</th><td><a href='mailto:$email'>$fname $lname</a></td></tr>\n";
+	print "<tr><th>Phase</th><td>$phase</td></tr>\n";
+	
+	$discussbegin = DateFormats::display($discussbegin);
+	$discussend = DateFormats::display($discussend);
+	$votebegin = DateFormats::display($votebegin);
+	$voteend = DateFormats::display($voteend);
+	
+	print "<tr><th>Discussion</th><td>$discussbegin - $discussend</td></tr>\n";
+	print "<tr><th>Voting</th><td colspan='2'>$votebegin - $voteend</td></tr>\n";
+
+	if ($phase eq "Closed") 
+		{print "<tr><th>Result</th><td><a href='irvresult?pid=$pid'>Results</a></td></tr>\n";}
+	
+	print "<tr><th>Presens Quorum</th><td>$presensval $presens</td></tr>\n";
+	$background = DataCheck::html($background);
+	}
+$sth1->finish;
+
+my ($cand, $info);
+
+print "<tr><th>Candidates</th><td>\n";
+$sth2->execute($pid);
+$sth2->bind_columns(\($cand));
+while (my $ref2 = $sth2->fetch)
+	{
+	print "$cand<br>\n";
+	}
+$sth2->finish;
+print "&nbsp;</td></tr>\n";
+
+print "</table>\n";
+
+print "<h3>Background</h3>\n";
+print "$background<br>\n";
+
+print "<h3>Candidate Information</h3>\n";
+$sth3->execute($pid);
+$sth3->bind_columns(\($cand, $info));
+while (my $ref3 = $sth3->fetch)
+	{
+	print "<b>$cand</b><br>\n";
+	$info = DataCheck::html($info);
+	print "$info<br><br>\n";
+	}
+$sth3->finish;
+
+$dbh->disconnect;
+
+HeadFoot::foot();
+
+exit();
+}

@@ -1,0 +1,95 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie($cookiename);
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[45]/) #only admins and sc members can modify districts
+	{
+	commform();
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+sub commform {
+
+HeadFoot::head($guid, $page);
+print $message;
+
+print<<EOF;
+<h3>Committee Administration</h3>
+
+<h4><a href="admincom">Add New Committee</a></h4>
+<b>To modify, click on the committee name.</b>
+<br><br>
+<table border cellpadding="4">
+<tr>
+<th>Delegation</th>
+<th>Status</th>
+</tr>
+EOF
+
+my $dbh = DBConnect::connectr();
+
+my $sth = $dbh->prepare(qq {select c.commid, c.comm, c.actstatus from committees c order by c.comm});
+
+$sth->execute();
+$sth->bind_columns(\my($commid, $comm, $actstatus));
+while (my $ref = $sth->fetch) {
+	my $status;
+	if ($actstatus == 1) {$status = "Active";}
+	else {$status = "Inactive";}
+	print "<tr>\n";
+	print "<td><a href='admincom?commid=$commid'><b>$comm</b></a></td>\n";
+	print "<td>$status</td>\n";
+	print "</tr>\n";
+}
+print "</table>\n";
+
+HeadFoot::foot();
+exit();
+}

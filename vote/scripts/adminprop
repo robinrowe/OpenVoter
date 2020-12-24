@@ -1,0 +1,416 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use DateFormats;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[45]/) #only admins and sc members can modify proposals
+	{
+	if ($q->param('addprop') or $q->param('modprop')) {
+		addprop();
+		}
+	elsif ($q->param('delprop')) {
+		delprop();
+		}
+	elsif ($q->param('cancel')) {
+		print $q->redirect (-location => "admin");
+		exit();
+		}
+	else {
+		propform();
+		}
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+
+sub propform {
+
+my $pid = $q->param('pid');
+
+HeadFoot::head($guid, $page);
+
+my ($gid, $title, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $consens, $phaseid, $scid, $fname, $lname, %sclist, @sclist);
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select g.gid, g.fname, g.lname from greens g, greens_roles gr where g.gid = gr.gid and gr.roleid = 5 and actstatus = 1 order by lname, fname}); #Steering Committee is roleid 5
+$sth1->execute();
+$sth1->bind_columns(\($scid, $fname, $lname));
+while (my $ref = $sth1->fetch) {
+	$sclist{$scid} = "$lname, $fname";
+	}
+$sth1->finish;
+
+$sclist{0} = "";
+
+my @tempsclist = sort {$sclist{$a} cmp $sclist{$b}} keys %sclist;
+
+foreach $_(@tempsclist)	{
+	push(@sclist, $_);
+	}
+
+print $q->start_form();
+
+if ($pid) {
+	my $sth2 = $dbh->prepare(qq {select gid, title, presenter, background, proposal, resources, reference, discussbegin, discussend, votebegin, voteend, presens, consens, phaseid from proposals where pid = ?});
+	$sth2->execute($pid);
+	($gid, $title, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $consens, $phaseid) = $sth2->fetchrow_array;
+	$sth2->finish;
+	
+	print "<h3>Modify Proposal</h3>\n$message\n";
+	print "<table cellpadding='4'>\n";
+	print "<tr><th>Proposal ID:</td><td>$pid</td></tr>\n";
+	}
+else 	{
+	print "<h3>Add New Proposal</h3>\n$message\n";
+	print "<table cellpadding='4'>\n";
+	}
+
+$dbh->disconnect;
+
+if ($phaseid < 3) 
+	{ #The actual proposal cannot be changed once voting has begun.
+	print "<tr><th>Proposal Title</th><td>\n";
+	print $q->textfield(-name => "title",
+		-size => 72,
+		-maxlength => 100,
+		-default => $title);
+	print "</td></tr>\n";
+
+	print "<tr><th>Presenter</th><td>\n";
+	print $q->textfield(-name => "presenter",
+		-size => 72,
+		-maxlength => 100,
+		-default => $presenter);
+	print "</td></tr>\n";
+	}
+else
+	{
+	print "<tr><th>Proposal Title</th><td>$title</td></tr>\n";
+	print "<tr><th>Presenter</th><td>$presenter</td></tr>\n";
+	}
+print "<tr><th>Floor Manager</th><td>\n";
+print $q->popup_menu(-name => 'gid',
+	-values => \@sclist,
+	-labels => \%sclist,
+	-default => $gid);
+print "</td></tr>\n";
+
+# Default dates discussion ends 21 days in the future, vote starts 22 days in the future votes end 28 days in the future
+
+$discussbegin = DateFormats::futurefmt(1) unless $discussbegin;
+
+print "<tr><th>Discussion Start Date</th><td>\n";
+print $q->textfield(-name => "discussbegin",
+	-size => 10,
+	-maxlength => 10,
+	-default => $discussbegin);
+print " YYYY-MM-DD Format</td></tr>\n";
+
+$discussend = DateFormats::futurefmt(22) unless $discussend;
+
+print "<tr><th>Discussion End Date</th><td>\n";
+print $q->textfield(-name => "discussend",
+	-size => 10,
+	-maxlength => 10,
+	-default => $discussend);
+print "</td></tr>\n";
+
+$votebegin = DateFormats::futurefmt(23) unless $votebegin;
+
+print "<tr><th>Voting Start Date</th><td>\n";
+print $q->textfield(-name => "votebegin",
+	-size => 10,
+	-maxlength => 10,
+	-default => $votebegin);
+print "</td></tr>\n";
+
+$voteend = DateFormats::futurefmt(29) unless $voteend;
+
+print "<tr><th>Voting End Date</th><td>\n";
+print $q->textfield(-name => "voteend",
+	-size => 10,
+	-maxlength => 10,
+	-default => $voteend);
+print "</td></tr>\n";
+
+print "<tr><th>Presens Quorum</th><td>\n";
+print $q->radio_group(-name => "presens",
+	-values => ["0.6666"],
+	-default => $presens,
+	-labels => {"0.6666" => "2/3"});
+
+print "<tr><th>Consens Quorum</th><td>\n";
+print $q->radio_group(-name => "consens",
+	-values => ["0.5", "0.6666"],
+	-default => $consens,
+	-labels => {"0.5" => "1/2", "0.6666" => "2/3"});
+print "</td></tr>\n";
+print "</table>\n";
+
+if ($phaseid < 3) 
+	{ #The actual proposal cannot be changed once voting has begun.
+	print "<h4>Background</h4>\n";
+	print $q->textarea(-name => "background",
+		-default => $background,
+		-rows => 10,
+		-cols => 100,
+		-wrap => "virtual");
+	
+	print "<h4>Proposal</h4>\n";
+	print $q->textarea(-name => "proposal",
+		-default => $proposal,
+		-rows => 10,
+		-cols => 100,
+		-wrap => "virtual");
+	
+	print "<h4>Resources</h4>\n";
+	print $q->textarea(-name => "resources",
+		-default => $resources,
+		-rows => 10,
+		-cols => 100,
+		-wrap => "virtual");
+	
+	print "<h4>References</h4>\n";
+	print $q->textarea(-name => "reference",
+		-default => $reference,
+		-rows => 10,
+		-cols => 100,
+		-wrap => "virtual");
+	}
+else
+	{
+	$background = DataCheck::html($background);
+	$proposal = DataCheck::html($proposal);
+	$resources = DataCheck::html($resources);
+	$reference = DataCheck::html($reference);
+	
+	print "<h4>Background</h4>\n$background\n";
+	print "<h4>Proposal</h4>\n$proposal\n";
+	print "<h4>Resources</h4>\n$resources\n";
+	print "<h4>References</h4>\n$reference\n";
+	}
+
+if ($pid) { 
+	print "<br><br>\n";
+	print $q->hidden('pid', "$pid");
+	print $q->submit('modprop', 'Modify Proposal');
+	print "&nbsp;&nbsp;&nbsp;";
+	print $q->submit('delprop', 'Delete Proposal');
+	}
+else {
+	print "<br><br>\n";
+	print $q->submit('addprop', 'Add Proposal');
+	}
+
+print "&nbsp;&nbsp;&nbsp;";
+print $q->submit('cancel', '    Cancel    ');
+
+print $q->end_form();
+HeadFoot::foot();
+exit();
+}
+
+sub addprop {
+#Check the data
+$message = "";
+my $id = $q->param('pid');
+my ($pid, $gid, $title, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $consens);
+if (DataCheck::propstat($id, 4, "lt")) #only allow proposals that aren't closed or ready to be certified yet to be modified.
+	{$pid = $q->param('pid');}
+
+if ($pid)
+	{
+	if (DataCheck::propstat($id, 3, "lt")) #only allow certain things to be modified if voting has begun.
+		{
+		$title = DataCheck::alphanumext($q->param('title'));
+		$message .= "Invalid title. " unless $title;
+		$presenter = DataCheck::alphanumext($q->param('presenter'));
+		$message .= "Invalid presenter. " unless $presenter;
+		$background = DataCheck::striphtml($q->param('background'));
+		$message .= "Invalid background. " unless $background;
+		$proposal = DataCheck::striphtml($q->param('proposal'));
+		$message .= "Invalid proposal. " unless ($proposal or DataCheck::propstat($id, 2, "gt"));
+		$resources = DataCheck::striphtml($q->param('resources'));
+		$reference = DataCheck::striphtml($q->param('reference'));
+		}
+	}
+else
+	{
+	$title = DataCheck::alphanumext($q->param('title'));
+	$message .= "Invalid title. " unless $title;
+	$presenter = DataCheck::alphanumext($q->param('presenter'));
+	$message .= "Invalid presenter. " unless $presenter;
+	$background = DataCheck::striphtml($q->param('background'));
+	$message .= "Invalid background. " unless $background;
+	$proposal = DataCheck::striphtml($q->param('proposal'));
+	$message .= "Invalid proposal. " unless ($proposal or DataCheck::propstat($id, 2, "gt"));
+	$resources = DataCheck::striphtml($q->param('resources'));
+	$reference = DataCheck::striphtml($q->param('reference'));
+	}
+
+if (DataCheck::valrole($q->param('gid'), 5, 1))  #only sc members can be floor managers
+	{$gid = $q->param('gid');}
+else
+	{$message .= "Invalid floor manager. ";}
+
+my $now = DateFormats::today();
+my $db = $q->param('discussbegin');
+my $de = $q->param('discussend');
+my $vb = $q->param('votebegin');
+my $ve = $q->param('voteend');
+
+if ((DataCheck::date($db)) and (DataCheck::compdates($now, $db) or DataCheck::propstat($id, 1, "gt")))
+	{$discussbegin = $q->param('discussbegin');}
+else
+	{$message .= "Invalid discussion begin date. ";}
+if ((DataCheck::date($de)) and (DataCheck::compdates($db, $de)))
+	{$discussend = $q->param('discussend');}
+else
+	{$message .= "Invalid discussion end date. ";}
+if ((DataCheck::date($vb)) and (DataCheck::compdates($de, $vb)))
+	{$votebegin = $q->param('votebegin');}
+else
+	{$message .= "Invalid vote begin date. ";}
+if ((DataCheck::date($vb)) and (DataCheck::compdates($vb, $ve)))
+	{$voteend = $q->param('voteend');}
+else
+	{$message .= "Invalid vote end date. ";}
+if (DataCheck::presens($q->param('presens')))
+	{$presens = $q->param('presens');}
+else
+	{$message .= "Invalid presens quorum number. ";}
+if (DataCheck::consens($q->param('consens')))
+	{$consens = $q->param('consens');}
+else
+	{$message .= "Invalid consens quorum number. ";}
+
+if ($gid and $discussbegin and $discussend and $votebegin and $voteend and $presens and $consens)
+	{
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		if ($title and $presenter and $background and $proposal)
+			{
+			if ($pid) 
+				{ #modify the proposal
+				my $sth1 = $dbh->prepare(qq {update proposals set title = ?, gid = ?, presenter = ?, background = ?, proposal = ?, resources = ?, reference = ?, discussbegin = ?, discussend = ?, votebegin = ?, voteend = ?, presens = ?, consens = ? where pid = ?});
+				$sth1->execute($title, $gid, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $consens, $pid);
+				}
+			else
+				{ #add the proposal
+				my $sql = qq {select propid from propid};
+				$pid = $dbh->selectrow_array($sql);
+				my $sth2 = $dbh->prepare(qq {insert into proposals (pid, title, gid, presenter, background, proposal, resources, reference, discussbegin, discussend, votebegin, voteend, presens, consens, phaseid) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)});
+				$sth2->execute($pid, $title, $gid, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $consens);
+				my $sth3 = $dbh->prepare(qq {update propid set propid = ?});
+				my $newpid = $pid + 1;
+				$sth3->execute($newpid);
+				}
+			}
+		else
+			{ #modify the proposal - limited modification once voting has begun
+			my $sth1 = $dbh->prepare(qq {update proposals set gid = ?, discussbegin = ?, discussend = ?, votebegin = ?, voteend = ?, presens = ?, consens = ? where pid = ?});
+			$sth1->execute($gid, $discussbegin, $discussend, $votebegin, $voteend, $presens, $consens, $pid);
+			}
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The proposal was not entered due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		propform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		print $q->redirect (-location => "propdetail?pid=$pid");
+		exit();
+		}
+	}
+else
+	{
+	$message = "<font color='red'>$message</font>";
+	$q->param(title => $title);
+	$q->param(presenter => $presenter);
+	$q->param(background => $background);
+	$q->param(proposal => $proposal);
+	$q->param(resources => $resources);
+	$q->param(reference => $reference);
+	propform();
+	}
+}
+
+sub delprop {
+my $pid = $q->param('pid');
+if (DataCheck::propstat($pid, '4', 'lt')) #proposals can't be deleted once voting has ended.
+	{
+	my $dbh = DBConnect::connectw();
+	my $sql;
+	if (DataCheck::propstat($pid, '1', 'eq')) #only delete new proposals - other proposals are cancelled.
+		{$sql = qq {delete from proposals where pid = ?};}	
+	else 
+		{$sql = qq {update proposals set phaseid = 6 where pid = ?};}
+	my $sth = $dbh->prepare($sql);
+	$sth->execute($pid);
+	$dbh->disconnect;
+	print $q->redirect (-location => "admin");
+	exit();
+	}
+else
+	{
+	my $msg  = "<font color='red'>Sorry, you can't delete proposal ID $pid</font><br>";
+	print $q->redirect (-location => "admin?message=$msg");
+	exit();
+	}
+exit();
+}

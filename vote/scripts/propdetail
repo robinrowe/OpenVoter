@@ -1,0 +1,113 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DateFormats;
+use DataCheck;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie("$cookiename");
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+
+if (! $guid)
+	{
+	$session->delete();
+	$guid = "";
+	}
+
+start();
+
+sub start {
+
+HeadFoot::head($guid, $page);
+
+print "<h3>Proposal Details</h3>\n";
+print "<table cellpadding='4'>\n";
+
+#DataCheck the following:
+my $pid = $q->param('pid');
+
+my ($title, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $presensval, $consens, $consensval, $phase, $distnum, $result, $moddate, $fname, $lname, $email);
+
+my $dbh = DBConnect::connectr();
+my $sth = $dbh->prepare(qq {select p.title, p.presenter, p.background, p.proposal, p.resources, p.reference, p.discussbegin, p.discussend, p.votebegin, p.voteend, p.presens, p.presensval, p.consens, p.consensval, ph.phase, p.distnum, p.result, p.moddate, g.fname, g.lname, g.email from proposals p, greens g, phases ph where p.gid = g.gid and p.phaseid = ph.phaseid and p.pid = ?});
+$sth->execute($pid);
+$sth->bind_columns(\($title, $presenter, $background, $proposal, $resources, $reference, $discussbegin, $discussend, $votebegin, $voteend, $presens, $presensval, $consens, $consensval, $phase, $distnum, $result, $moddate, $fname, $lname, $email));
+while (my $ref = $sth->fetch) {
+	print "<tr><th>Proposal ID</th><td>$pid</td></tr>\n";
+	print "<tr><th>Proposal</th><td>$title</td></tr>\n";
+	print "<tr><th>Presenter</th><td>$presenter</td></tr>\n";
+	if ($phase eq "Closed")
+		{print "<tr><th>Floor Manager</th><td>$fname $lname</td></tr>\n";}
+	else
+		{print "<tr><th>Floor Manager</th><td><a href='mailto:$email'>$fname $lname</a></td></tr>\n";}
+	print "<tr><th>Phase</th><td>$phase</td></tr>\n";
+	
+	$discussbegin = DateFormats::display($discussbegin);
+	$discussend = DateFormats::display($discussend);
+	$votebegin = DateFormats::display($votebegin);
+	$voteend = DateFormats::display($voteend);
+	
+	print "<tr><th>Discussion</th><td>$discussbegin - $discussend</td></tr>\n";
+	print "<tr><th>Voting</th><td>$votebegin - $voteend</td></tr>\n";
+
+	if ($phase eq "Closed") 
+		{print "<tr><th>Result</th><td><a href='propresult?pid=$pid'>$result</a></td></tr>\n";}
+	if ($consens == 0.5) {$consens = "A Majority"};
+	
+	$background = DataCheck::html($background);
+	$proposal = DataCheck::html($proposal);
+	$resources = DataCheck::html($resources);
+	$reference = DataCheck::html($reference);
+	
+	print "<tr><th>Presens Quorum</th><td>$presensval $presens</td></tr>\n";
+	print "<tr><th>Consens Quorum</th><td>$consensval $consens of Yes and No Votes</td></tr>\n";
+	print "</table>\n";
+	print "<h4>Background</h4>\n";
+	print "$background\n";
+	print "<h4>Proposal</h4>\n";
+	print "$proposal\n";
+	print "<h4>Resources</h4>\n";
+	$resources = "None" unless $resources;
+	print "$resources\n";
+	$reference = "None" unless $reference;
+	print "<h4>References</h4>\n";
+	print "$reference<br>\n";
+	}
+$sth->finish;
+$dbh->disconnect;
+
+HeadFoot::foot();
+
+exit();
+}

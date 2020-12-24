@@ -1,0 +1,114 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename();
+my $sid = $q->cookie($cookiename);
+my $temp = qw(TEMP);
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif ($session->param('roles') =~ /[45]/) #only admins and sc members can modify delegates
+	{
+	delform();
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+sub delform {
+
+HeadFoot::head($guid, $page);
+print $message;
+
+print<<EOF;
+<h3>Delegate Administration</h3>
+
+<h4><a href="admindel">Add New Delegate</a></h4>
+<b>To modify, click on the delegate name.</b>
+<br><br>
+<table border cellpadding="4">
+<tr>
+<th>Name</th>
+<th>Delegation</th>
+<th>Roles</th>
+</tr>
+EOF
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select g.gid, g.fname, g.lname from greens g order by g.lname, g.fname});
+my $sth2 = $dbh->prepare(qq {select d.district, r.role, c.comm, gr.actstatus, gr.commid, gr.roleid from greens_roles gr left join districts d on gr.distid = d.distid, roles r, committees c where gr.gid = ? and gr.roleid = r.roleid and gr.commid = c.commid order by gr.actstatus desc, d.district, gr.roleid, gr.commid});
+
+$sth1->execute();
+$sth1->bind_columns(\my ($gid, $fname, $lname));
+while (my $ref1 = $sth1->fetch) {
+	my $sql = qq {select count(gid) from greens_roles where gid = ?};
+	my $cntroles = $dbh->selectrow_array($sql, undef, $gid);
+	if ($cntroles)
+		{
+		print "<tr><td rowspan=\"$cntroles\"><a href='admindel?gid=$gid'><b>$fname $lname</b></a></td>\n";
+		$sth2->execute($gid);
+		$sth2->bind_columns(\my($district, $role, $comm, $actstatus, $commid, $roleid));
+		while (my $ref2 = $sth2->fetch) {
+			if ($commid > 1 and ($roleid == 3 or $roleid == 7 or $roleid = 8 or $roleid = 9))
+				{$role = "$comm $role";}
+			$district = "&nbsp;" unless $district;
+			$role = "Retired $role" unless $actstatus == 1;
+			print "<td>$district</td>";
+			print "<td>$role</td></tr>";
+			}
+		$sth2->finish;
+		}
+	else
+		{
+		print "<tr><td><a href='admindel?gid=$gid'><b>$fname $lname</b></a><br></td><td>&nbsp;</td><td>&nbsp;</td></tr>\n";
+		}
+	}
+print "</table>\n";
+
+$sth1->finish;
+$dbh->disconnect;
+
+HeadFoot::foot();
+exit();
+}

@@ -1,0 +1,402 @@
+#!/usr/bin/perl -wT
+
+#Copyright (C) 2004 Susan J. Dridi sdridi@greens.org
+#
+#This program is free software; you can redistribute it and/or
+#modify it under the terms of the GNU General Public License
+#as published by the Free Software Foundation; either version 2
+#of the License, or (at your option) any later version.
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+use strict;
+use lib qw(LIB);
+my $temp = qw(TEMP);
+use Conf;
+use HeadFoot;
+use DBConnect;
+use DataCheck;
+use CGI;
+use CgiErrors;
+use CGI::Session;
+$CGI::POST_MAX=1024 * 100;  # max 100K posts
+$CGI::DISABLE_UPLOADS = 1;  # no uploads  
+$CGI::HEADERS_ONCE = 1;
+
+my $q = new CGI;
+my $cookiename = Conf::cookiename;
+my $sid = $q->cookie("$cookiename");
+my $session = new CGI::Session("driver:File", $sid, {Directory=>$temp});
+$session->expire('+1h');
+my $guid = $session->param('guid');
+my $page = $q->url(-relative => 1);
+my $message;
+
+my $cid = $q->param('commid');
+
+if (! $guid)
+	{
+	if ($session)
+		{$session->delete();}
+	print $q->redirect (-location => "login?page=$page");
+	exit();
+	}
+elsif (($session->param('roles') =~ /[45]/) or (DataCheck::valrole($guid, 7, $cid)))
+	 #only admins and sc members or committee co-chairs (roleid 7) can modify committees
+	 {
+	if ($q->param('addcomm') or $q->param('modcomm')) {
+		addcomm();
+		}
+	elsif ($q->param('cancel')) {
+		if ($session->param('roles') =~ /[45]/)
+			{print $q->redirect (-location => "admincommittees");}
+		else
+			{print $q->redirect (-location => "contacts?cid=$cid");}
+		exit();
+		}
+	else {
+		commform();
+		}
+	}
+else 
+	{
+	print $q->redirect (-location => "index");
+	exit();
+	}
+
+
+sub commform {
+
+my $commid = $q->param('commid');
+
+my (%grlist, @grlist, %distlist, @distlist, %rolelist, @rolelist, $comm, $webpage, $listserv, $actstatus);
+
+my $dbh = DBConnect::connectr();
+
+my $sth1 = $dbh->prepare(qq {select g.gid, g.fname, g.lname from greens g order by g.lname, g.fname}); 
+$sth1->execute();
+$sth1->bind_columns(\my($grid, $fname, $lname));
+while (my $ref = $sth1->fetch) {
+	$grlist{$grid} = "$lname, $fname";
+	}
+$sth1->finish;
+
+$grlist{0} = "";
+
+my @tempgrlist = sort {$grlist{$a} cmp $grlist{$b}} keys %grlist;
+
+foreach $_(@tempgrlist)	{
+	push(@grlist, $_);
+	}
+
+my $sth2 = $dbh->prepare(qq {select d.distid, d.district from districts d order by d.district}); 
+$sth2->execute();
+$sth2->bind_columns(\my($did, $district));
+while (my $ref = $sth2->fetch) {
+	$distlist{$did} = "$district";
+	}
+$sth2->finish;
+
+$distlist{0} = "";
+
+my @tempdistlist = sort {$distlist{$a} cmp $distlist{$b}} keys %distlist;
+
+foreach $_(@tempdistlist)	{
+	push(@distlist, $_);
+	}
+
+my $sth3 = $dbh->prepare(qq {select r.roleid, r.role from roles r where r.roleid in (3, 7, 8, 9) order by r.role}); 
+$sth3->execute();
+$sth3->bind_columns(\my($rid, $role));
+while (my $ref = $sth3->fetch) {
+	$rolelist{$rid} = "$role";
+	}
+$sth3->finish;
+
+$rolelist{0} = "";
+
+my @temprolelist = sort {$rolelist{$a} cmp $rolelist{$b}} keys %rolelist;
+
+foreach $_(@temprolelist)	{
+	push(@rolelist, $_);
+	}
+
+HeadFoot::head($guid, $page);
+print $message;
+print $q->start_form();
+
+if ($commid) {
+	my $sth = $dbh->prepare(qq {select c.comm, c.webpage, c.listserv, c.actstatus from committees c where c.commid = ?});
+	$sth->execute($commid);
+	($comm, $webpage, $listserv, $actstatus) = $sth->fetchrow_array;
+	$sth->finish;
+	print "<h3>Modify Committee</h3>\n";
+	}
+else 
+	{print "<h3>Add New Committee</h3>\n";}
+
+print "<table cellpadding='4'>\n";
+print "<tr><th>Committee</th><td>";
+print $q->textfield(-name => "comm",
+	-size => 50,
+	-maxlength => 50,
+	-default => $comm);
+print "</td></tr>\n";
+
+print "<tr><th>Webpage</th><td>";
+print $q->textfield(-name => "webpage",
+	-size => 50,
+	-maxlength => 100,
+	-default => $webpage);
+print "</td></tr>\n";
+
+print "<tr><th>Listserv</th><td>";
+print $q->textfield(-name => "listserv",
+	-size => 50,
+	-maxlength => 100,
+	-default => $listserv);
+print "</td></tr>\n";
+
+print "<tr><th>Status</th><td>";
+print $q->radio_group(-name =>'actstatus',
+	-values => [1, 0],
+	-default => $actstatus,
+	-labels => {1 => 'Active', 0 => 'Inactive'});
+print "</td></tr>\n";
+
+print "</table>\n";
+
+if ($commid)
+	{
+	print "<h3>Members, Advisors &amp; Observers</h3>\n";
+
+	my $sth = $dbh->prepare(qq {select g.gid, g.fname, g.lname, gr.roleid, gr.distid, r.role, d.district from greens_roles gr, greens g, roles r, districts d where gr.commid = ? and gr.actstatus = 1 and gr.gid = g.gid and gr.roleid = r.roleid and gr.distid = d.distid order by g.lname, g.fname});
+	$sth->execute($commid);
+	$sth->bind_columns(\my($gid, $fname, $lname, $rid, $did, $role, $district));
+	print "<table cellpadding='4'>\n";
+	print "<tr><td><b>Name</b></td><td><b>District</b></td><td colspan='2'><b>Role</b></td></tr>\n";
+	while (my $ref = $sth->fetch)
+		{
+		print "<tr><td>$fname $lname</td>\n";
+		print "<td>$district\n";
+		print $q->hidden("d$gid", $did);
+		print "\n</td><td>$role\n";
+		print $q->hidden("r$gid", $rid);
+		print "\n</td><td>\n";
+
+		print $q->checkbox(-name =>"del$gid",
+			-value => 1,
+			-label => "Delete");
+		print "</td></tr>\n";
+		}
+	print "</table>\n";
+	
+	print "<h3>New Member</h3>\n";
+
+	print "<table cellpadding='4'>\n";
+
+	print "<tr><th>Name</th><th>Delegation</th><th>Role</th></tr>";
+	
+	print "<tr><td>\n";
+
+	print $q->popup_menu(-name => 'newgid',
+		-values => \@grlist,
+		-labels => \%grlist,
+		-default => "");
+	
+	print "</td>\n<td>\n";
+
+	print $q->popup_menu(-name => 'newdid',
+		-values => \@distlist,
+		-labels => \%distlist,
+		-default => "");
+
+	print "</td>\n<td>\n";
+
+	print $q->popup_menu(-name => 'newrid',
+		-values => \@rolelist,
+		-labels => \%rolelist,
+		-default => "");
+
+	print "</td></tr>\n</table>\n";
+
+	print "<br><br>&nbsp;&nbsp;&nbsp;";
+	print $q->submit('modcomm', 'Modify');
+	}
+else 
+	{
+	print "<br><br>&nbsp;&nbsp;&nbsp;\n";
+	print $q->submit('addcomm', '  Add  ');
+	}
+
+print "&nbsp;&nbsp;&nbsp;";
+print $q->hidden('commid', "$commid");
+print $q->submit('cancel', 'Cancel');
+
+print $q->end_form();
+
+$dbh->disconnect;
+
+HeadFoot::foot();
+exit();
+}
+
+sub addcomm{
+#Check the data:
+$message = "";
+my ($errors, $commid, $comm, $webpage, $listserv, $actstatus, $newgid, $newdid, $newrid, @grdel, %grrid, %grdid, $rid, $did, $notbrandnew);
+
+if (DataCheck::commid($q->param('commid')) == 1)
+	{$commid = $q->param('commid');}
+
+if ($commid)
+	{
+	#get the list of committee members, their status, role and district
+	#I need to DataCheck these!
+	#get the list of committee members to be deleted.
+	my $dbh = DBConnect::connectr();
+	my $sth1 = $dbh->prepare(qq {select gid from greens_roles where commid = ? and actstatus = 1});
+	$sth1->execute($commid);
+	$sth1->bind_columns(\my($gid));
+	while (my $ref = $sth1->fetch) {
+		my $pdel = "del" . $gid;
+		if ($q->param("$pdel") == 1)
+			{
+			my $pr = "r" . $gid;
+			my $pd = "d" . $gid;
+			push (@grdel, $gid);
+			$grrid{$gid} = $q->param("$pr");
+			$grdid{$gid} = $q->param("$pd");
+			}
+		}
+	$sth1->finish;
+	$dbh->disconnect;
+
+	$comm = DataCheck::name($q->param('comm'));
+	$message .= "Committee name required. " unless $comm;
+	}
+else
+	{
+	if (DataCheck::commname($q->param('comm')) == 1)
+		{$message .= "That Committee already exists! ";}
+	else
+		{
+		$comm = DataCheck::name($q->param('comm'));
+		$message .= "Committee name required. " unless $comm;
+		}
+	}
+	
+if ($q->param('newgid') or $q->param('newdid') or $q->param('newrid'))
+	{
+	if (DataCheck::gid($q->param('newgid')))
+		{$newgid = $q->param('newgid');}
+	else
+		{$message .= "Invalid Name. ";}
+
+	if (DataCheck::distid($q->param('newdid')))
+		{$newdid = $q->param('newdid');	}
+	else
+		{$message .= "Invalid District. ";}
+
+	if (DataCheck::role($q->param('newrid')))
+		{$newrid = $q->param('newrid');	}
+	else
+		{$message .= "Invalid Role. ";}
+	if (DataCheck::commem($commid, $newgid, $newdid, $newrid))
+		{$notbrandnew = 1;}
+	}
+
+if ($q->param('actstatus') == 1)
+	{$actstatus = 1;}
+else
+	{$actstatus = 0;}
+
+if (DataCheck::link($q->param('webpage'), 100))
+	{$webpage = $q->param('webpage');}
+if (DataCheck::link($q->param('listserv'), 100))
+	{$listserv = $q->param('listserv');}
+
+if ($comm) {
+	my $dbh = DBConnect::connectw();
+	$dbh->{AutoCommit} = 0; #enable transactions
+	eval {
+		if ($commid)
+			{
+			if ($actstatus)
+				{
+				my $sth2 = $dbh->prepare(qq {update committees set comm = ?, webpage = ?, listserv = ?, actstatus = 1 where commid = ?});
+				$sth2->execute($comm, $webpage, $listserv, $commid);
+				
+				if ($newgid and $newdid and $newrid)
+					{
+					if ($notbrandnew == 1)
+						{
+						my $sth4 = $dbh->prepare(qq {update greens_roles set actstatus = 1 where gid = ? and commid = ? and roleid = ? and distid = ?});
+						$sth4->execute($newgid, $commid, $newrid, $newdid);
+						}
+					else
+						{
+						my $sth5 = $dbh->prepare(qq {insert into greens_roles (gid, commid, roleid, distid, actstatus) VALUES(?, ?, ?, ?, 1)});
+						$sth5->execute($newgid, $commid, $newrid, $newdid);
+						}
+					}
+				
+				my $sth6 = $dbh->prepare(qq {update greens_roles set actstatus = 0 where gid = ? and commid = ? and roleid = ? and distid = ?});
+				foreach my $grid(@grdel)
+					{
+					my $roleid = $grrid{$grid};
+					my $distid = $grdid{$grid};
+					$sth6->execute($grid, $commid, $roleid, $distid);
+					}
+				}
+			else
+				{
+				my $sth7 = $dbh->prepare(qq {update committees set comm = ?, webpage = ?, listserv = ?, actstatus = 0 where commid = ?});
+				my $sth8 = $dbh->prepare(qq {update greens_roles set actstatus = 0 where commid = ?});
+				$sth7->execute($comm, $webpage, $listserv, $commid);
+				$sth8->execute($commid);
+				}
+			}
+		else
+			{
+			if ($actstatus)
+				{
+				my $sth9 = $dbh->prepare(qq {insert into committees (comm, webpage, listserv, actstatus) VALUES(?, ?, ?, ?)});
+				$sth9->execute($comm, $webpage, $listserv, $actstatus);
+				}
+			else
+				{
+				my $sth10 = $dbh->prepare(qq {insert into committees (comm, webpage, listserv, actstatus) VALUES(?, ?, ?, 0)});
+				$sth10->execute($comm, $webpage, $listserv);
+				}
+			}
+		$dbh->commit;
+		};
+	if ($@) 
+		{
+		my $admin = Conf::admin();
+		$message = "The district was not entered due to an error. Please try again. If the second try doesn't work, please report this error to the <a href=\"mailto:$admin\">program admin</a>.<p>Error: $@";
+		$dbh->rollback;
+		$dbh->disconnect;
+		commform();
+		}
+	else
+		{
+		$dbh->disconnect;
+		print $q->redirect (-location => "contacts?cid=$commid");
+		exit();
+		}
+	}
+else {
+	$message = "<font color='red'>$message</font><br>\n";
+	$q->param(comm => $comm);
+	commform();
+	}
+}
