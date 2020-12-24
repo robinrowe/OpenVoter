@@ -1,4 +1,4 @@
-# GreenVoter
+# OpenVoter
 
 Robin Rowe 2020/12/24
 
