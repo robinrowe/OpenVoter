@@ -4,11 +4,11 @@ Robin Rowe 2020/12/24
 
 ## Overview
 
-OpenVoter is an open source voting system alternative to OpaVote. Rather than develop a system from scratch, we are evaluating all open source voting systems available (3 currently). To pick one to extend into a platform that supports all voting methodologies. 
+OpenVoter is an open source voting alternative to systems such as OpaVote. Rather than develop a system from scratch, we are evaluating all open source voting systems available (3 currently). To pick one to extend into a platform that supports all voting methodologies. 
 
-For political party committees, or anyone, who would prefer to operate their own voting system. Reasons to prefer OpenVoter include avoiding sharing personal data of your voters with SaaS companies, being able to review the source code, being able to extend the system to support other voting methodologies, and that the software is free.
+For political party committees, or any group, that would prefer to operate their own voting system. Reasons to prefer OpenVoter include avoiding sharing personal data of your voters with SaaS companies, being able to review the source code, being able to extend the system to support more voting methodologies and features, and that the software is free.
 
-Voting system experts, students, researchers and programmers are welcome to join our Slack channel. Email Robin Rowe <robin@robinsrowe@.com>. 
+Voting system experts, students, researchers and programmers are welcome to join our Slack channel. Email Robin Rowe <robin@robinsrowe.com>. 
 
 ## Open Source Voting Systems
 
