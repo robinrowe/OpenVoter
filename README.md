@@ -38,4 +38,4 @@ In addition, systems need to be configurable to handle all the possible outcomes
 - An admin may change vote totals visibility midvote from cannot to can, but not from can to cannot
 - Spoiled ballots are handled as vote refunds and marked for audit
 - Choose voting methodologies, with the support for every type: plurality, approval, rank choice, score, star, black ball...
-- A ballot may contain different voting methodologies for different seats in the same election
+- A ballot may contain different voting methodologies for different races in the same election
