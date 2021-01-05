@@ -23,16 +23,19 @@ Scala-based voting system at https://github.com/sanedragon/every-election-system
 - Auditable - how can you prove that all the votes counted were the votes that were cast?
 - Traceable - how can an individual see that their vote was counted?
 - Usability - how easy is it for a user to understand and use the system?
+- Reliability - Ballots are ACID and blockchained and the system fault-tolerant, a crash cannot result in a half-cast ballot?
+- Security - Fraudulent ballots have a clear process resolution?
 
 ## Configurability
 
-In addition, systems either need to be configurable to handle all the possible outcomes to these questions.
+In addition, systems need to be configurable to handle all the possible outcomes to the above questions.
 
-- A voter see their vote after it has been cast
+- A voter can review his or her vote after it has been cast
 - A voter can/cannot refund (change) his or her vote after it has been cast before the election deadline closes
-- Anyone can/cannot see vote totals as they are collected, and the administrator may change that to midvote to can, but not to cannot
-- Ballots are ACID and the system fault-tolerant, so crash cannot result in an half-cast ballot
-- Spoiled ballots, if they can exist, are rejected
-- How the system handles two ballots for the same voter is the same as vote refund, that the second overrides the first
+- If voter refunds are allowed, the second overrides the first, but may require permission of admin
+- How the system handles two ballots from the same voter is the same as with vote refund, but if vote refunds not allowed the voter may be marked for audit
+- Anyone can/cannot see vote totals as they are collected
+- An admin may change vote totals visibility midvote from cannot to can, but not from can to cannot
+- Spoiled ballots are handled as vote refunds and marked for audit
 - Choose voting methodologies, with the support for every type: plurality, approval, rank choice, score, star, black ball...
-- A ballot may contain different voting methodologies for different races
+- A ballot may contain different voting methodologies for different seats in the same election
