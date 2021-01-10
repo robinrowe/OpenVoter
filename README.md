@@ -4,9 +4,11 @@ Robin Rowe 2020/12/24
 
 ## Overview
 
-OpenVoter is an open source voting alternative to systems such as OpaVote. Rather than develop a system from scratch, we are evaluating all open source voting systems available (3 currently). To pick one to extend into a platform that supports all voting methodologies. 
+OpenVoter is an open source voting alternative to systems such as OpaVote. Rather than develop a system from scratch, we are evaluating all open source voting systems available (4 currently). To pick one to extend into a platform that supports all voting methodologies. 
 
 For political party committees, or any group, that would prefer to operate their own voting system. Reasons to prefer OpenVoter include avoiding sharing personal data of your voters with SaaS companies, being able to review the source code, being able to extend the system to support more voting methodologies and features, and that the software is free.
+
+We are also interested in systems used to collect signatures for candidicy or referendum. California doesn't have an online system for that yet, but Arizona does. https://apps.azsos.gov/equal/ Lacking a digital system, California signatures are collected on paper in person and the signatures verified by comparing signatures on file at city hall by the city clerk. The voter signatures to compare come from the California DMV driver's license database. California voters can check their registration or register at https://voterstatus.sos.ca.gov.
 
 Voting system experts, students, researchers and programmers are welcome to join our Slack channel. Email Robin Rowe <robin@robinsrowe.com>. 
 
@@ -23,6 +25,10 @@ Perl-based voting system developed by Cornell University at https://github.com/a
 ### Every Election System
 
 Scala-based voting system at https://github.com/sanedragon/every-election-system.
+
+### DemoChoice 
+
+RCV using PHP and C++ at https://demochoice.org.
 
 ##  Desired is a system that meets all the following criteria
 
