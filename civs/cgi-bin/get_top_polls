@@ -1,0 +1,55 @@
+#!@PERL@
+
+use strict;
+use warnings;
+use CGI qw(:standard);
+use POSIX qw(strftime);
+
+use lib '@CGIBINDIR@';
+use languages;
+
+my $home = '@CIVSDATADIR@';
+
+my $file = 'top_polls.html';
+
+if (defined(param('full')) && param('full') eq 'yes') {
+    $file = 'top_polls_full.html';
+}
+
+my $top_polls = "$home/elections/$file";
+
+undef $/;
+
+print CGI::header(-charset => 'utf-8');
+
+open (IN, $top_polls);
+
+print <IN>;
+
+
+if ('@LOG_HOME_VISITS@') {
+    my $languages = http('Accept-Language');
+    if (!defined($languages)) { $languages = 'unspecified-lang' }
+
+    my $remote_ip_address;
+    if ('@USING_ISA@') {
+        $remote_ip_address = http('HTTP_IPREMOTEADDR');
+        if (!defined($remote_ip_address)) {
+            $remote_ip_address = http('HTTP_REMOTE_ADDRESS');
+        }
+        if (!defined($remote_ip_address)) {
+            $remote_ip_address = remote_addr();
+        }
+    } else {
+        $remote_ip_address = remote_addr();
+    }  
+    
+    my $civs_log = $home . '/log';
+    my $now = strftime "%a %b %e %H:%M:%S %Y", localtime;
+    open (LOG, ">>$civs_log");
+    # print LOG "$now $remote_ip_address home-page-visit\r\n";
+    print LOG "$now $remote_ip_address home-page-visit $languages\r\n";
+    close(LOG);
+}
+
+exit 0;

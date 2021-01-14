@@ -1,0 +1,8 @@
+<HILITE>
+<TITLE> Favorite Ice Cream
+<SHOWADS>
+<SEATS> 1
+<CANDIDATE> <a href=img/ice/mint.gif target="_blank">Mint</a>
+<CANDIDATE> <a href=img/ice/vanilla.gif target="_blank">Vanilla</a>
+<CANDIDATE> <a href=img/ice/choc.gif target="_blank">Chocolate</a>
+<CANDIDATE> <a href=img/ice/garlic.gif target="_blank">Garlic</a>

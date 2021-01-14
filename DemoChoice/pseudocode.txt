@@ -1,0 +1,176 @@
+DemoChoice specs & pseudocode (C)2002 Dave Robinson
+
+This file is slightly obsolete but outlines some of the major features.
+
+Ballot form
+ items to present:
+  poll title
+  "Rank the candidates you support!"
+  # winners
+  Candidates w/ selection controls
+  buttons:
+   cast vote
+   reset
+  links:
+   help (popup window)
+   DemoChoice ad (Create your own poll etc.)
+   view results (for incremental tallies)
+ exclude duplicates in scriptable browsers
+  Store candidates in sorted linked list
+   (use "next" and "prev" arrays for languages w/o pointers)
+  When a rank changes:
+   Delete candidate from list
+   Place candidate in appropriate place in list
+   If duplicate:
+    if moving candidate up in list:
+     place candidate before duplicate, and move subsequent cands down
+      until no duplicate is left
+    vice versa for moving down
+  Update rankings to reflect this list 
+ sort candidates in DHTML browsers (assign screen order = list order)
+ function in minimal browsers
+  should be possible to cast vote and access help file
+  reject ballots w/ duplicates
+ enter email address for closed polls
+ warn if poll is closed or expired
+ send results as form data:
+  Choice1..ChoiceN w/ cand #'s (0..N-1) as values, or
+  Cand0..CandN-1 w/ rank #'s (0..N-1) as values
+
+Ballot processing script
+ Arrange form data into comma-delimited sequence of chosen candidates
+ Generate error messages for blank ballots, those with duplicates, or expired polls
+ For expired polls, tally vote but don't record it, to determine who it counts for
+ Display table w/ ballot list
+ Append ballot to file
+ Invoke tally script
+ Output MyTally (who vote counted for)
+ For closed polls:
+  check email address against registration list and already-voted list
+  send email to address to confirm vote
+  
+
+Tally script
+ Load config file to get # seats, thresh type, excluded candidates
+ Accept a new ballot as input
+ Attempt to just add ballot to the totals.  If elimination order changes,
+  or the error in surplus transfers becomes noticeable, start over with a full recount.
+ If poll is expired, just figure out who the vote would count for.  In a multi-winner election,
+  do a full recount to eliminate any surplus errors.
+ Begin tally loop
+ In first round:
+  Compute threshold and initialize arrays
+  If doing full recount, load ballots and set weight=1.0 for each ballot
+   Build linked lists that organize ballots according to 1st-choice votes
+   Count first-round vote
+  Determine initial count and depth for new ballot
+  Use previous tally + new ballot for first round count if just adding new ballot
+ In subsequent rounds:
+  Determine tally and depth for new ballot
+  If doing full recount, traverse linked list & reassign elements to next valid choices
+   Count votes while doing this
+   When transferring from a winner, adjust weights and sum weighted depths of those ballots
+   If a ballot exhausts, count it toward its highest-ranked winner, if any
+ Determine plurality winner & loser for round
+  Resolve ties by looking at successively previous rounds, or by lot
+ If exhausted ballots are being excluded from threshold calc, recompute threshold
+ If there is a winner:
+  Determine surplus, add to elimination order list, and set elim flag
+  If there are multiple winners, process in plurality order and avoid transferring ballots between them
+  Keep track of most recently transferred ballots and only use those for fractional surplus transfers
+ Otherwise, eliminate loser (elim order list uses sign to indicate winner/loser)
+ End tally loop
+ Save results in text file
+
+Results script
+ Load config & tally files
+ Sort candidates by 1st round votes
+ "All Candidates Eliminated" counts as a candidate here.
+ Don't show excluded candidates.
+ Dump output as table or horiz. bar graph (det. by querystring)
+
+ Table:
+  Dump out interleaved tally and transfer matrices in HTML table
+  Only list nonzero transfer values
+  Show outcome, # ballots, threshold
+
+ Bar graph:
+  Display all rounds on one page, separated by whitespace and interlinked
+  by internal tags
+  Show tally bars for candidates with nonzero votes, w/ thresh line
+   Colors are assigned randomly
+   Recalculate threshold for each round if doing IRV
+   Bars are made w/ tables w/ given background color and "shim.gif" with
+    appropriate widths to define bar and threshold (dotline.gif) position
+   "Alt" tags for gifs contain bars made of letters like "AAAA__:" where
+     the colon is the threshold line.  This helps text-based browsers and
+     color-blind users.
+  Show transfer breakdowns for eliminated candidate(s)
+   Bars are made the same way, with widths corresponding to the votes
+   transferred and colors corresponding to those receiving them
+  Show status of eliminated candidate (defeated/elected)
+
+  Include verbose explanations for single-round displays
+   Describe meaning of theshold line
+   Describe exhausted ballot color when it first appears in the transfer
+    bar (but not the tally bar)
+   Describe first round as plurality outcome
+   Describe how elimination will change next round's tally, and
+    why decisions were made (above quota, enough candidates left, etc.)
+   Note # of votes counting toward winner, and compare to plurality result
+
+ Depth:
+   Explain that tally depth shows importance of lower rankings
+   Show bars for each ballot rank counting toward winner
+    (largest bar = full scale)
+
+
+File formats:
+Each poll is given a short name that is passed in the querystring.
+For example, a poll could be called "STV".  The files would then be:
+
+STV_config.txt
+<TITLE> Vote for your favorite candidate! 3 will be chosen.
+<NODIVS> [disables ballot list sorting]
+<INVITE> 76 [this exists for closed polls; 76 registered voters]
+<SEATS> 3
+<CANDIDATE> Bob
+<CANDIDATE> Mary
+<CANDIDATE> Sue
+<CANDIDATE> Mahesh
+<EXCLUDE> 1,2 [exclude Mary and Sue]
+[there is an arbitrary number of candidate lines]
+
+STV_ballots.txt
+3,1,2
+2,0
+2,3,1,0
+[candidates are numbered 0-3 corresponding to Bob..Mahesh and listed in ballot order]
+
+STV_tally.txt
+[a tally file containing at least a "Ballots   |0" line must be present before doing a tally]
+[use "Ballots   |1" if you are tallying a new ballot file from scratch]
+Ballots   |355
+Threshold |177.5|IRV
+Transfer  |115|81|55|104|0|
+Tally     |115|81|55|104|0|-3
+Transfer  |6|24|-55|18|7|
+Tally     |121|105|0|122|7|-2
+Transfer  |26|-105|0|63|16|
+Tally     |147|0|0|185|23|4
+Status    |0|-1|-1|1|
+Depth     |104|59|22|0|23|
+
+Note that the numbers aren't meant to mean anything here.
+The columns in transfer/tally lines are for candidates 0..3, then exhausted.
+The last column in the tally round is the eliminated candidate number +1,
+negative if it's a loser, or zero if all remaining candidates are elected.
+The status is 1 for winners, 0 for losers in the final round,
+and -1 for losers eliminated in prior rounds.
+Depth is the number of votes counting for a winner that were ranked 1st|2nd|3rd| etc.
+"MyTally" and "MyDepth" lines may be present if the last tally was an update for
+ a single additional ballot.
+"RankCt" contains the number of ballots that ranked that number of candidates.
+
+For closed polls, lists of registered and already-voted voters exists,
+containing an email address on each line.

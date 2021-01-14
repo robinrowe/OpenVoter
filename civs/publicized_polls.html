@@ -1,0 +1,29 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+                "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CIVS Publicized Polls</title>
+<base href="@CIVSURL@/">
+<link rel="canonical" href="@CIVSURL@/publicized_polls.html">
+<link rel="stylesheet" type="text/css" href="style.css">
+<link href="@CIVSURL@/images/check123b.png" rel="shortcut icon">
+<script type="text/javascript" src="@CIVSURL@/ajax.js"></script>
+<script src="ezdom.js" type="text/javascript"></script>
+<script src="civs_hdr.js" type="text/javascript"></script>
+</head>
+
+<body>
+
+<script type="text/javascript">
+var body = document.getElementsByTagName('body')[0]
+body.appendChild(create_header("Public Polls"))
+</script>
+
+<div id="top_polls" class="contents">Loading poll information...JavaScript must be enabled for this web page to work correctly.</div>
+
+<script>fetch_content('top_polls', '@PROTO@://@THISHOST@@CIVSBINURL@/get_top_polls@PERLEXT@?full=yes')</script>
+</body>
+</html>

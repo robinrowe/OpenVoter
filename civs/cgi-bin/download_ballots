@@ -1,0 +1,68 @@
+#!@PERL@
+
+use strict;
+use warnings;
+
+use lib '@CGIBINDIR@';
+use civs_common;
+use CGI qw(:standard);
+use Digest::MD5 qw(md5_hex);
+use POSIX qw(strftime);
+use DB_File;
+use beatpath;
+use Socket;
+use IO::Handle;
+
+my $thisurl = $civs_bin_path."/download_ballots@PERLEXT@";
+
+use election;
+
+if (!IsWellFormedElectionID) {
+    error("The poll identifier \"$election_id\" is not valid.");
+}
+
+if (!IsStarted) {
+    error("This poll does not exist or has not been started");
+}
+
+if (param('admin_key') ne '@ADMIN_KEY@') {
+    if ($public ne 'yes') {
+	if (!IsStopped) {
+	    error("This poll has not yet been closed");
+	}
+    }
+
+    if ($ballot_reporting ne 'yes') {
+	error("Ballot reporting is not enabled for this poll");
+    }
+}
+
+print header(-type=>'application/text', -attachment=>'civs_ballots.csv');
+
+# print the list of candidate names
+print join ',', @choices;
+print "\n";
+
+my @voters = split /\n/, $vdata{'recorded_voters'};
+fisher_yates_shuffle(\@voters);  # permute @voters to improve anonymity
+foreach my $voter_key (@voters) {
+    # recorded_vote is a comma separated list of the ranks
+    # that the voter assigned to candidates.  Element i of the list
+    # corresponds to candidate i.
+    my $recorded_vote = $vdata{$voter_key}; 
+    print "$recorded_vote\n";
+}
+
+exit 0;
+
+sub error {
+    my $msg = shift;
+    HTML_Header("CIVS Ballot Download");
+    CIVS_Header("CIVS Ballot Download");
+    print h2("Error");
+    print p($msg);
+    print end_html();
+
+    exit 0;
+}
+

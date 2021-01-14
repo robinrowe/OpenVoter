@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>STV with Diversity Requirements</title>
+</head>
+<body>
+<script type="text/javascript">
+    var candidates = [];
+    var numSeats;
+    var ballots = [];
+    var electionName = "";
+    var requirements = [];
+
+    function loadElection() {
+        var input = document.getElementById("bltFile");
+        var file = input.files[0];
+        console.log(file);
+        var r = new FileReader();
+        r.onloadend = () => {
+            parseBLT(r.result);
+            refreshCandidates();
+            startDefinitionStep();
+        };
+        r.readAsText(file);
+    }
+
+    /*
+    From https://www.opavote.com/help/overview:
+
+    A ballot file contains the following information:
+
+    - The first line has two numbers indicating the number of candidates and the number of seats.
+    - The second line is the first ballot, and each following line is another ballot until you reach the end of ballots marker. Each ballot is a separate line.
+    - The first number on a ballot line indicates a ballot weight, and for most elections, this will always be 1. The last number on a ballot line is always 0 to indicate the end of a ballot.
+    - The other numbers on a ballot line indicate the rankings. The second number on a ballot line is the candidate number of the first ranked candidate, the third number on a ballot line is the candidate number of the second ranked candidate, and so forth.
+    - A ballot line of "1 0" is an empty ballot that did not rank any candidates. If a ballot ranks 1 candidate, then the ballot line will have 3 numbers. If a ballot ranks 4 candidates, then the ballot line will have 6 numbers.
+    - A line with only a 0 is an end of ballots marker and indicates that the previous line was the last ballot.
+    - The lines after the end of ballots marker indicate the candidate names in double quotes. The number of candidate names must match the number indicated on the first line.
+    - The line after the candidate names is the title in double quotes.
+    - Blank lines, extra white space, and any comments (text after a #) are ignored.
+    - Be careful with double quotes. They must be straight double quotes (") and not curly double quotes (“”).
+    - If you have more than 10,000 ballots, then OpaVote stores the ballots in what we call a "packed" format. Only unique ballots are included in the BLT file and the weight indicates the number of times that the ballot occurred.
+     */
+    function parseBLT(blt) {
+        lines = blt.split('\n');
+        var numCandidates;
+        var step = "meta";
+        var indexedBallots = [];
+        for(var i = 0; i < lines.length; i++) {
+            var line = lines[i].split('#')[0].trim();
+            if(!line) {
+                continue;
+            }
+            if(step === "meta") {
+                [numCandidates, numSeats] = line.split(/\s+/);
+                numCandidates = parseInt(numCandidates);
+                numSeats = parseInt(numSeats);
+                step = "ballots";
+            } else if(step === "ballots") {
+                if(line === "0") {
+                    step = "candidates"
+                } else {
+                    var rawBallot = line.split(/\s+/);
+                    var weight = parseInt(rawBallot[0]);
+                    var ballot = [];
+                    for(var j = 1; j < rawBallot.length; j++) {
+                        ballot.push(parseInt(rawBallot[j]));
+                    }
+                    for(var k = 0; k < weight; k++) {
+                        indexedBallots.push(ballot);
+                    }
+                }
+            } else if(step === "candidates") {
+                var candidateName = line.replace(/^"|"$/g, ""); // strip leading and trailing quotes
+                candidates.push({name: candidateName, diversityCategories: []});
+                if(candidates.length >= numCandidates) {
+                    step = "name";
+                }
+            } else if(step === "name") {
+                electionName = line.replace(/^"|"$/g, "");
+            }
+        }
+
+        ballots = indexedBallots.map(iB => {
+            return iB.filter(i => i > 0).map(index => { return candidates[index - 1].name });
+        });
+        console.log("Election: " + electionName);
+        console.log("" + numSeats + " seats");
+        console.log("" + numCandidates + " candidates");
+        console.log("" + ballots.length + " ballots");
+    }
+
+    function refreshCandidates() {
+        var list = document.getElementById("candidateList");
+
+        while(list.firstChild) {
+            list.removeChild( list.firstChild)
+        }
+
+        candidates.forEach(candidate => {
+            var item = document.createElement("li");
+
+            var nameSpan = document.createElement("span");
+            nameSpan.appendChild(document.createTextNode(candidate.name));
+            item.appendChild(nameSpan);
+
+            requirements.forEach(requirement => {
+                var label = document.createElement("label");
+                var box = document.createElement("input");
+                box.setAttribute("type", "checkbox");
+                if(candidate.diversityCategories.includes(requirement.name)) {
+                    box.setAttribute("checked", "checked");
+                }
+                box.addEventListener("change", ev => {
+                    if(ev.target.checked) {
+                        candidate.diversityCategories.push(requirement.name);
+                    } else {
+                        candidate.diversityCategories = candidate.diversityCategories.filter(c => c !== requirement.name);
+                    }
+                });
+
+                label.appendChild(box);
+                label.appendChild(document.createTextNode(requirement.name));
+
+                item.appendChild(label);
+            });
+
+            list.appendChild(item);
+        });
+    }
+
+    function startDefinitionStep() {
+        document.getElementById("loadStep").style.display = "none";
+        document.getElementById("definitionStep").style.display = "block";
+    }
+
+    function addRequirement() {
+        requirements.push({
+            "name": document.getElementById("requirementNameInput").value,
+            "type": document.getElementById("requirementTypeInput").value,
+            "quantity": parseInt(document.getElementById("requirementQuantityInput").value)
+        });
+
+        refreshRequirements();
+    }
+
+    function removeRequirement(index) {
+        candidates.forEach(c => c.diversityCategories = c.diversityCategories.filter(cat => cat !== requirements[index].name));
+        if(requirements.length === 1) {
+            requirements = [];
+        } else {
+            requirements = requirements.splice(index, 1);
+        }
+        refreshRequirements();
+    }
+
+    function refreshRequirements() {
+        var list = document.getElementById("requirementsList");
+
+        while(list.firstChild) {
+            list.removeChild( list.firstChild)
+        }
+
+        var listItemProto = document.getElementById("requirementsListProto").getElementsByTagName("li")[0];
+
+        for(var i = 0; i < requirements.length; i++) {
+            var r = requirements[i];
+            item = listItemProto.cloneNode(true);
+            item.setAttribute("data-index", i);
+            item.getElementsByClassName("requirementType")[0].innerText = r.type;
+            item.getElementsByClassName("requirementName")[0].innerText = r.name;
+            item.getElementsByClassName("requirementQuantity")[0].innerText = r.quantity;
+            list.appendChild(item);
+        }
+
+        refreshCandidates();
+    }
+
+    function runElection() {
+        startCountingStep();
+
+        var maximums = {};
+        requirements.filter(r => r.type === "maximum").forEach(r => maximums[r.name] = r.quantity);
+
+        var minimums = {};
+        requirements.filter(r => r.type === "minimum").forEach(r => minimums[r.name] = r.quantity);
+
+        var electionRequest = {
+            "election": {
+                "type": "SingleTransferableVote",
+                "candidates": candidates,
+                "numPositions": numSeats,
+                "diversityRequirements": {
+                    "maximums": maximums,
+                    "minimums": minimums
+                }
+            },
+            "ballots": ballots
+        };
+
+        var req = new XMLHttpRequest();
+        req.onloadend = () => {
+            document.getElementById("result").innerText = req.responseText;
+            startResultStep();
+        };
+        req.open("POST", "/election");
+        req.setRequestHeader("Content-Type", "application/json");
+        req.send(JSON.stringify(electionRequest));
+        console.log(electionRequest);
+    }
+
+    function startCountingStep() {
+        document.getElementById("definitionStep").style.display = "none";
+        document.getElementById("countingStep").style.display = "block";
+    }
+
+    function startResultStep() {
+        document.getElementById("countingStep").style.display = "none";
+        document.getElementById("resultStep").style.display = "block";
+    }
+</script>
+<h1>STV With Diversity Requirements</h1>
+<div id="loadStep">
+    <h2>Load an OpaVote election</h2>
+    <div>
+        <label>
+            Enter an OpaVote BLT file:
+            <input id="bltFile" type="file">
+        </label>
+    </div>
+    <div>
+        <button onclick="loadElection()">Load</button>
+    </div>
+</div>
+
+<div id="definitionStep" style="display:none">
+    <h2>Configure Diversity Requirements</h2>
+        <div>
+            <h4>Candidates</h4>
+            <ul id="candidateList">
+            </ul>
+        </div>
+        <div>
+            <h4>Requirements</h4>
+            <ul id="requirementsListProto" style="display:none">
+                <li data-index="-1">
+                    <span class="requirementType"></span>
+                    <span class="requirementQuantity"></span>
+                    <span class="requirementName"></span>
+                    <button onclick="removeRequirement(this.parentElement.getAttribute('data-index'));">Remove</button>
+                </li>
+            </ul>
+            <ul id="requirementsList">
+            </ul>
+            <div>
+                <div>
+                    <select id="requirementTypeInput">
+                        <option name="minimum">minimum</option>
+                        <option name="maximum">maximum</option>
+                    </select>
+                    <input type="number" placeholder="number" id="requirementQuantityInput">
+                    <input type="text" placeholder="name" id="requirementNameInput">
+                </div>
+                <button onclick="addRequirement()">Add</button>
+                <div id="addRequirementError"></div>
+            </div>
+        </div>
+        <div>
+            <h4>Run</h4>
+            <button onclick="runElection()">Count Ballots</button>
+        </div>
+</div>
+
+<div id="countingStep" style="display:none">
+    <h2>Counting Ballots...</h2>
+</div>
+
+<div id="resultStep" style="display:none">
+    <h3>Result</h3>
+    <pre id="result">
+        ...
+    </pre>
+</div>
+
+</body>
+</html>

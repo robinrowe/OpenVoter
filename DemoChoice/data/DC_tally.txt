@@ -1,0 +1,17 @@
+Ballots   |1287
+IncVotes  |1
+Threshold |643.5|Droop
+Transfer  |311|440|259|277|0|
+Tally     |311|440|259|277|0|-3
+Transfer  |65|83|-259|80|31|
+Tally     |376|523|0|357|31|-4
+Transfer  |48|291|0|-357|18|
+Tally     |424|814|0|0|49|2
+Status    |0|1|-1|-1|0|
+XferFrom  |0|0|0|0|
+Surplus   |1|1|0.67010309278351|0|
+MyDepth   |0|0|0|0|0|
+MyTally   |1|0|0|0|0|
+Depth     |440|309|65|0|49|
+RankCt    |113|118|197|859|0|
+Ties      |0|0|0|0|

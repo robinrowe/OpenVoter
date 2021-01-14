@@ -1,0 +1,8 @@
+<HIDE>
+<TITLE> What happened to the poll I'm looking for?
+<SHOWADS>
+<SEATS> 1
+<CANDIDATE> It was deleted
+<CANDIDATE> I typed the wrong label in the &quot;poll=&quot; field above
+<CANDIDATE> I followed a bad link
+<CANDIDATE> I forgot that poll labels were case sensitive

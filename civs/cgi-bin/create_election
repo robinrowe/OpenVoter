@@ -1,0 +1,256 @@
+#!@PERL@
+
+use strict;
+use warnings;
+
+use lib '@CGIBINDIR@';
+use civs_common;
+use CGI qw(:standard);
+use Digest::MD5 qw(md5_hex);
+use DB_File;
+use mail;
+use Socket;
+use IO::Handle;
+use MIME::Base64;
+use send_result_key;
+
+my $thisurl = $civs_bin_path."/create_election@PERLEXT@";
+my $mail_mgmt_url = "@PROTO@://$thishost$civs_bin_path/mail_mgmt@PERLEXT@";
+
+### Initial parameter checking
+
+my $email_addr = param('email_addr');
+$email_addr = mail::TrimAddr($email_addr);
+if (!&CheckAddr($email_addr)) {
+    HTML_Header($tx->Invalid_email_address_hdr);
+    CIVS_Header();
+    print h1($tx->Invalid_email_address_hdr);
+    print p($tx->Address_unacceptable(escapeHTML($email_addr)));
+    print end_html();
+    exit 0;
+}
+my $optouts = GetOptouts();
+if (HasOptOuts($optouts, $email_addr)) {
+    HTML_Header($tx->Invalid_email_address_hdr);
+    CIVS_Header();
+    print h1($tx->Invalid_email_address_hdr);
+    print p($tx->Address_opted_out(escapeHTML($email_addr)));
+    print end_html();
+    exit 0;
+}
+
+my $choices = param('choices');
+my @c1 = split /(\r\n)+/, $choices;
+my @c2 = ();
+my $choices_file = upload('choices_file');
+if (defined($choices_file)) {
+    while (<$choices_file>) {
+	chomp;
+	push @c2, $_;
+    }
+}
+my $num_choices = 0;
+$choices = "";
+sub trim {
+    (my $s) = @_;
+    $s =~ s/^\s+//;
+    $s =~ s/\s+$//;
+    return $s;
+}
+foreach my $ch (@c1) {
+    $ch = &trim($ch);
+    $ch = &Filter($ch);
+    if (!($ch =~ m/^\s*$/)) {
+	$choices .= $ch;
+	$choices .= "\n";
+	$num_choices++;
+    }
+}
+foreach my $ch (@c2) {
+    $ch = &trim($ch);
+    $ch = &Filter($ch);
+    if (!($ch =~ m/^\s*$/)) {
+	$choices .= $ch;
+	$choices .= "\n";
+	$num_choices++;
+    }
+}
+
+if ($num_choices < 2) {
+    HTML_Header($tx->CIVS_Poll_Creation);
+    CIVS_Header();
+    print h1($tx->Error);
+    print p($tx->Poll_must_have_two_choices);
+    print end_html();
+    exit 0;
+}
+
+### Election looks ok, create the election directory
+
+my $election_id = 'E_'.SecureNonce();
+my $election_dir = $home.'/elections/'.$election_id;
+my $election_data = $election_dir.'/election_data';
+
+if (!mkdir($election_dir)) {
+    HTML_Header($tx->CIVS_Poll_Creation);
+    CIVS_Header();
+    print h1($tx->Error);
+    print p($tx->Poll_directory_not_writeable($election_dir));
+    print end_html();
+    exit 0;
+}
+
+my %edata;
+tie %edata, "DB_File", $election_data, O_CREAT|O_RDWR, 0777, $DB_HASH;
+
+##### read form data into DB
+$edata{'title'} = my $title = &Filter(param('title'));
+$edata{'description'} = &Filter(param('description'));
+$edata{'name'} = my $name = &Filter(param('name'));
+$edata{'email_addr'} = &Filter(param('email_addr'));
+$edata{'num_winners'} = &Filter(param('num_winners'));
+$edata{'election_end'} = &Filter(param('election_end'));
+$edata{'election_begin'} = time();
+
+sub SetBinaryParameter {
+    my ($param_name, $default) = @_;
+
+    my $value = param($param_name);
+    if (!defined($value) or $value eq '') {
+	$value = $default;
+    }
+    $edata{$param_name} = $value;
+    return $value;
+}
+
+my $public = SetBinaryParameter('public', 'no');
+SetBinaryParameter('writeins', 'no');
+SetBinaryParameter('allow_voting', 'no');
+SetBinaryParameter('no_opinion', 'no');
+SetBinaryParameter('shuffle', 'yes');
+SetBinaryParameter('proportional', 'no');
+SetBinaryParameter('external_ballots', 'no');
+my $publicize = SetBinaryParameter('publicize', 'no');
+if ($public eq 'no') { $publicize = 'no'; }
+
+$edata{'choices'} = $choices;
+
+my $addresses = param('addresses');
+my $addresses_file = upload('addresses_file');
+if (defined($addresses_file)) {
+    while (<$addresses_file>) {
+    	$addresses .= $_;
+    }
+}
+$edata{'addresses'} = $addresses;
+
+my $rating_interpretation = param('rating_interpretation');
+my $use_combined_ratings;
+if (defined($rating_interpretation) and $rating_interpretation eq 'combined_ratings') {
+    $use_combined_ratings = 1;
+} else {
+    $use_combined_ratings = 0;
+}
+$edata{'use_combined_ratings'} = $use_combined_ratings;
+
+SetBinaryParameter('ballot_reporting', 'no');
+SetBinaryParameter('reveal_voters', 'no');
+
+my $restrict_results = SetBinaryParameter('restrict_results', 'no');
+my $result_addrs;
+if ($restrict_results eq 'yes') {
+    $edata{'result_addrs'} = $result_addrs = param('result_addrs');
+    if ($result_addrs eq '') {
+        Fatal_CIVS_Error('No email addresses were given to send election results to. This should have been caught by JavaScript input validation.');
+    }
+}
+
+if ($publicize eq 'yes') {
+    $edata{'ballot_reporting'} = 'no';
+    $edata{'reveal_voters'} = 'no';
+    $edata{'restrict_results'} = 'no';
+}
+
+HTML_Header($tx->CIVS_Poll_Creation);
+CIVS_Header($tx->Poll_created($title));
+
+print "<pre>";
+
+my $control_key = SecureNonce();
+my $authorization_key = SecureNonce();
+my $result_key = SecureNonce();
+$edata{'hash_control_key'} = civs_hash($control_key);
+if ($publicize eq 'yes') {
+    $authorization_key = '';
+    $edata{'hash_authorization_key'} = 'none';
+} else {
+    $edata{'hash_authorization_key'} = civs_hash($authorization_key);
+}
+$edata{'hash_result_key'} = $result_key;
+
+my $url = "@PROTO@://$thishost$civs_bin_path/control@PERLEXT@?id=$election_id&key=$control_key&akey=$authorization_key";
+
+if ($publicize eq 'yes') {
+    $url = "@PROTO@://$thishost$civs_bin_path/control@PERLEXT@?id=$election_id&key=$control_key";
+}
+
+if (!($local_debug)) {
+    my $success = 1;
+    if (OpenMail) {
+        my $civs_supervisor = '@SUPERVISOR@';
+        MailFrom('@AUTH_SENDER@') &&
+        MailTo($email_addr) &&
+        StartMailData || do {
+            CloseMail;
+            exit 0;
+        };
+        SendHeader 'From', "$civs_supervisor (Condorcet Internet Voting Service)";
+        SendHeader 'To',  "$email_addr ($name)";
+        SendHeader 'Subject', $tx->CIVS_poll_created($title);
+        Send 'Content-Type: text/plain; charset="utf-8"';
+        Send '';
+        Send $tx->creation_email_info1($title,$url);
+        if ($public eq 'yes') {
+            if ($publicize eq 'yes') {
+                Send $tx->creation_email_public_link("@PROTO@://$thishost$civs_bin_path/vote@PERLEXT@?id=$election_id");
+            } else {
+                Send $tx->creation_email_public_link("@PROTO@://$thishost$civs_bin_path/vote@PERLEXT@?id=$election_id&akey=$authorization_key");
+            }
+        }
+        Send $tx->For_more_information($civs_home, $mail_mgmt_url);
+        $success &= EndMailData;
+        CloseMail;
+
+        print "</pre>\n";
+
+        if ($success) {
+            print p($tx->mail_has_been_sent($email_addr));
+            print p($tx->click_on_the_URL_to_start($title));
+        } else {
+        }
+    } else {
+        $success = 0;
+        print p("Could not connect to SMTP server", tt('@SMTP_HOST@'));
+        Log("Failed to send email to supervisor of $election_id");
+    }
+    if (!$success) {
+        print p("Error sending mail to supervisor of election. Election not started.");
+        Log("Failed to send email to supervisor of $election_id");
+        untie %edata;
+        print end_html();
+        exit 0;
+    }
+} else { # debugging mode
+    print p($tx->here_is_the_control_URL);
+    print pre("<a href=\"$url\">$url</a>");
+}
+
+if ($restrict_results eq 'yes') {
+    SendResultKey($election_id, $email_addr, $title, $result_addrs, $result_key);
+}
+
+Log("Election $title ($election_id) created by $email_addr");
+untie %edata;
+print end_html();
+
+exit 0;
