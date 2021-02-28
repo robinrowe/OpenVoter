@@ -59,6 +59,7 @@ In addition, systems need to be configurable to handle all the possible outcomes
 - FPP https://en.wikipedia.org/wiki/First-past-the-post_voting
 - RCV https://en.wikipedia.org/wiki/Ranked-choice_voting_in_the_United_States
 - Approval https://electionscience.org/approval-voting-101/
+- Plus-Minus: Voters may cast a negative vote, a protest vote. Vote against a candidate they detest, without casting a vote for an opposing candidate. Prevents lesser-of-evils votes being misinterpreted as an support for the other candidate. Subtract a vote using a minus vote, or cast a plus vote in the usual way.
 
 ## Contact
 
