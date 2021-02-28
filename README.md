@@ -54,6 +54,12 @@ In addition, systems need to be configurable to handle all the possible outcomes
 - Choose voting methodologies, with the support for every type: plurality, approval, rank choice, score, star, black ball...
 - A ballot may contain different voting methodologies for different races in the same election
 
+## Voting Methodologies
+
+- FPP https://en.wikipedia.org/wiki/First-past-the-post_voting
+- RCV https://en.wikipedia.org/wiki/Ranked-choice_voting_in_the_United_States
+- Approval https://electionscience.org/approval-voting-101/
+
 ## Contact
 
 Robin Rowe <robin@robinsrowe.com>
